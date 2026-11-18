@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "evidence-capture",
+  "name": "evidence-journey",
   "main": "src/index.js",
   // Set this to the day you deploy.
   "compatibility_date": "2026-11-18",

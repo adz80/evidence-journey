@@ -14,15 +14,16 @@ rediscover it.
 | Thing | Value |
 | --- | --- |
 | GitHub repo | `adz80/evidence-journey` (public), default branch `main` |
-| GitHub owner ID / repo ID | `40626478` / **TBD** (numeric; see "Setting up the repo") |
+| GitHub owner ID / repo ID | `40626478` / `1462819588` |
 | Repo layout | Repo root = the gadget's `worker/` folder (`wrangler.jsonc` at root) |
 | Cloudflare account | `cb3485d35912cf35f42f5f3505062d9b` (Adam Boyce Personal Sandbox - SaaS) |
 | Zone | `chewbacca.dev` / `7daa530713d6ec22b68dad4e26f03bfb` |
-| Worker name / script tag | `evidence-capture` / **TBD after first deploy** |
-| Worker ID (for Gateway) | **TBD.** 32-hex `id` from `GET /workers/workers` (beta), matched by `name` |
+| Worker name / script tag | **`evidence-journey`** / `793120f87cb34a148bf4a1e423f4648e` (the dashboard import named it after the repo; `wrangler.jsonc` `name` matches) |
+| Worker ID (for Gateway) | `793120f87cb34a148bf4a1e423f4648e` (same as the tag, from `GET /workers/workers`) |
 | Live URL | https://evidence.chewbacca.dev (custom domain, **behind Access**). No workers.dev URL: `workers_dev: false` |
-| Workers Builds trigger | **TBD** (branch `main`, build cmd empty, deploy `npx wrangler deploy`, root `/`) |
-| Repo connection | **TBD** |
+| Workers Builds trigger | `2c2420af-bb60-497e-9d3f-e1a0b856678a` (branch `main`, build cmd empty, deploy `npx wrangler deploy`, root `/`) |
+| Repo connection | `6bb5d629-5b90-4251-b0ab-111a810957dd` |
+| Custom domain | `evidence.chewbacca.dev` → `evidence-journey` (id `02958ac4e34a0bb6bbc7f8e29178b40ce1f017a3`) |
 
 ### Cloudflare resources (already created)
 
@@ -36,7 +37,7 @@ rediscover it.
 | Access AUD (in `ACCESS_AUD`) | `213080684c76bf274a8616eb3754456b3d59ec555e1555ff8e191de4a7659c16` |
 | Access policies | Allow: aboyce@cloudflare.com, adamboyce.home@gmail.com (`efb13d2e-…`). Service Auth: token below (`adc2b13c-…`) |
 | Service token (gadget) | `evidence-journey-gadget` / id `095475f5-4df1-458d-8d0b-98a26dc3325c`, client id `43e6ceaf2641df9cc1159063d9a4bd59.access` |
-| Gateway Forward rule | **TBD.** Create after the first deploy (snippet below) |
+| Gateway Forward rule | "Evidence PoC: forward test subject to evidence-journey" / `e047acd9-00ff-4477-9853-48cd8cae95e0`, precedence 50, subject `headoffice@chewbacca.dev` |
 
 **Never commit the service token secret.** It belongs only in the gadget's HTTP connection.
 The AUD and team domain are not secrets.
@@ -141,8 +142,9 @@ All paths are under `/accounts/cb3485d35912cf35f42f5f3505062d9b`. Each snippet i
 - **List builds:** `GET /builds/workers/{scriptTag}/builds?per_page=5`. Fields: `status`,
   `build_outcome`, `build_trigger_metadata.commit_hash`. Logs: `GET /builds/builds/{build_uuid}/logs`.
 - **Start a build by hand:** `POST /builds/triggers/{trigger_uuid}/builds` with `{ branch: "main" }`.
-- **Script tag:** `GET /workers/scripts`, match `id === "evidence-capture"`, read `tag`.
-- **Worker ID for Gateway:** `GET /workers/workers?per_page=100`, match `name === "evidence-capture"`, read `id`.
+- **Script tag:** `GET /workers/scripts`, match `id === "evidence-journey"`, read `tag`.
+- **Worker ID for Gateway:** `GET /workers/workers?per_page=100`, match `name === "evidence-journey"`, read `id`.
+- Note: the queue `evidence-capture` keeps its name; only the Worker is called `evidence-journey`.
 - **Create the Gateway Forward rule** (once, after the first successful deploy). Do a pass-through test
   first if you are unsure:
   ```js
