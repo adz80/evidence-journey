@@ -39,6 +39,13 @@
 
   "observability": { "enabled": true },
 
+  // Australia. The investigator UI/API runs next to AWS Sydney (ap-southeast-2).
+  // Capture runs wherever the subject's traffic enters Cloudflare (Gateway invokes the
+  // middleware at their nearest data centre), so it is in Australia when they are.
+  // The R2 bucket was created with location hint "oc" (Oceania) and case ledgers are
+  // created with LEDGER_LOCATION_HINT. Check with GET /api/placement.
+  "placement": { "region": "aws:ap-southeast-2" },
+
   "vars": {
     // Your Zero Trust team domain and the AUD tag of the Access application that
     // protects EVIDENCE_HOST. The API refuses every request until both are set.
@@ -47,6 +54,11 @@
 
     // Hostname of the evidence UI/API. Traffic to it is never captured.
     "EVIDENCE_HOST": "evidence.chewbacca.dev",
+
+    // Data location (see "placement" above). Informational except LEDGER_LOCATION_HINT.
+    "PLACEMENT_REGION": "aws:ap-southeast-2",
+    "LEDGER_LOCATION_HINT": "oc",
+    "EVIDENCE_BUCKET_NAME": "insider-evidence-poc (location OC)",
 
     // Per-response / per-request-body capture cap in bytes (2 MB).
     "MAX_CAPTURE_BYTES": "2097152",

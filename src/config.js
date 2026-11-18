@@ -47,6 +47,20 @@ export function idleMs(env) {
   return (Number.isFinite(n) && n > 0 ? n : 30) * 60_000;
 }
 
+// LEDGER_LOCATION_HINT ("oc" = Oceania) decides where a case's ledger is created.
+// It only applies the first time a case's Durable Object is created; an existing
+// one stays where it is.
 export function ledger(env, caseId) {
-  return env.LEDGER.get(env.LEDGER.idFromName(caseId));
+  const hint = env.LEDGER_LOCATION_HINT || undefined;
+  return env.LEDGER.get(env.LEDGER.idFromName(caseId), hint ? { locationHint: hint } : undefined);
+}
+
+// Cloudflare data centre code (e.g. "SYD") of whoever runs this code.
+export async function currentColo() {
+  try {
+    const t = await (await fetch("https://cloudflare.com/cdn-cgi/trace")).text();
+    return /^colo=(.+)$/m.exec(t)?.[1] || null;
+  } catch {
+    return null;
+  }
 }

@@ -3,7 +3,7 @@
 // access (audit) records, plus one PoC-only exception: POST .../reset clears a
 // case whose config has allowReset: true (never set on a real case).
 
-import { findCase, getCases, isActive, ledger } from "./config.js";
+import { currentColo, findCase, getCases, isActive, ledger } from "./config.js";
 import { verifyAccess } from "./access.js";
 import { renderVisit } from "./render.js";
 import { serveAsset } from "./assets.js";
@@ -40,6 +40,21 @@ async function route(url, env, actor) {
   const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent); // ["api", ...]
 
   if (parts.length === 2 && parts[1] === "me") return json({ actor });
+
+  // GET /api/placement — where the API Worker and each case ledger are running.
+  if (parts.length === 2 && parts[1] === "placement") {
+    const ledgers = {};
+    for (const c of getCases(env)) {
+      ledgers[c.id] = await ledger(env, c.id).where().then((w) => w.colo, (e) => "error: " + e.message);
+    }
+    return json({
+      workerColo: await currentColo(),
+      placementRegion: env.PLACEMENT_REGION || null,
+      ledgerLocationHint: env.LEDGER_LOCATION_HINT || null,
+      bucket: env.EVIDENCE_BUCKET_NAME || null,
+      ledgers,
+    });
+  }
 
   if (parts.length === 2 && parts[1] === "cases") {
     return json({

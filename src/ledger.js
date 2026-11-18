@@ -12,7 +12,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { createHash } from "node:crypto";
-import { findCase, idleMs } from "./config.js";
+import { currentColo, findCase, idleMs } from "./config.js";
 import { sha256Hex, stableStringify } from "./util.js";
 import { annotateJourney } from "./insights.js";
 
@@ -326,6 +326,11 @@ export class CaseLedger extends DurableObject {
           truncated: !!d.response?.body?.truncated,
         };
       });
+  }
+
+  // Where this case's ledger (and its SQLite data) lives.
+  async where() {
+    return { colo: await currentColo() };
   }
 
   // ---- verification ---------------------------------------------------------
