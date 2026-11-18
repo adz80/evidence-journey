@@ -67,9 +67,9 @@ export async function renderVisit(env, caseId, seq, actor) {
   };
   await env.EVIDENCE.put(key, result.jpeg, { httpMetadata: { contentType: "image/jpeg" }, customMetadata: meta });
   const ev = await lg.appendEvent(caseId, "reconstruction", {
-    visitSeq: seq,
     key,
     ...meta,
+    visitSeq: seq, // number (after ...meta, whose visitSeq is a string) so ledger lookups match
     missingUrls: result.missingUrls.slice(0, 50),
     actor,
     label: "Reconstruction rendered offline from captured responses. Not a screenshot of the user's screen.",
