@@ -39,7 +39,39 @@ export class CaseLedger extends DurableObject {
       );
       CREATE INDEX IF NOT EXISTS idx_records_ts ON records(ts);
       CREATE INDEX IF NOT EXISTS idx_records_kind_ts ON records(kind, ts);
+      CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
     `);
+  }
+
+  #getMeta(k) {
+    return this.sql.exec("SELECT v FROM meta WHERE k = ?", k).toArray()[0]?.v ?? null;
+  }
+
+  #setMeta(k, v) {
+    this.sql.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, String(v));
+  }
+
+  // PoC only (the API checks the case's allowReset flag). Deletes every ledger
+  // record and starts a new chain whose first record says who cleared it and when.
+  // Captures stamped before `at` that arrive later from the queue are dropped.
+  reset(caseId, info) {
+    const at = Number(info?.at) || Date.now();
+    let deletedRecords = 0;
+    let res;
+    this.ctx.storage.transactionSync(() => {
+      deletedRecords = this.sql.exec("SELECT COUNT(*) AS n FROM records").toArray()[0].n;
+      this.sql.exec("DELETE FROM records");
+      this.#setMeta("resetAt", at);
+      const cfg = findCase(this.env, caseId);
+      const iso = (t) => (Number.isFinite(t) ? new Date(t).toISOString() : null);
+      res = this.#insert("case-open", `case-open:${caseId}:${at}`, at, {
+        caseId,
+        config: cfg ? { ...cfg, start: iso(cfg.start), end: iso(cfg.end) } : null,
+        reset: { actor: info?.actor ?? null, at: new Date(at).toISOString(), deletedRecords, deletedObjects: info?.deletedObjects ?? null },
+        note: "PoC case data was cleared. A new chain starts here.",
+      });
+    });
+    return { deletedRecords, head: res };
   }
 
   // ---- writing ------------------------------------------------------------
@@ -93,9 +125,11 @@ export class CaseLedger extends DurableObject {
   // Called by the queue consumer (and as a fallback by the capture path).
   append(records) {
     const out = [];
+    const resetAt = Number(this.#getMeta("resetAt") || 0);
     this.ctx.storage.transactionSync(() => {
       for (const r of records) {
         if (!r || !r.captureId || !r.caseId) continue;
+        if (resetAt && Number(r.ts) < resetAt) continue; // captured before a PoC reset
         this.#ensureOpen(r.caseId);
         const existing = this.sql.exec("SELECT seq FROM records WHERE capture_id = ?", r.captureId).toArray()[0];
         if (existing) {

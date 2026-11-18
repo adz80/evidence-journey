@@ -14,7 +14,8 @@ this at a real employee without a case, an approver, and Legal/HR sign-off.
 | `src/queue.js` | Queue consumer. Appends summaries to the case ledger (at-least-once, de-duplicated). |
 | `src/ledger.js` | `CaseLedger` Durable Object, one per case. Orders records and hash-chains them. Builds the journey (sessions, visits, sends, gaps) and verifies the chain against R2. |
 | `src/render.js` | Replays captured responses in Browser Run and saves a JPEG reconstruction. The browser never contacts live sites. |
-| `src/api.js`, `src/access.js` | Read-only Evidence API and web UI on `EVIDENCE_HOST`. Every request needs a valid Cloudflare Access JWT. |
+| `src/api.js`, `src/access.js` | Read-only Evidence API and web UI on `EVIDENCE_HOST`. Every request needs a valid Cloudflare Access JWT. The one exception is PoC-only: `POST /api/cases/:id/reset` with `{"confirm":"<id>"}` deletes the case's R2 objects and ledger, and works only when the case has `"allowReset": true`. |
+| Reconstructions | Saved in R2 as JPEGs at `cases/<case>/reconstructions/v2/<UTC time>_<host>_visit-<seq>.jpg` and hashed into the chain. "Save all reconstructions to R2" in the UI renders every page visit. |
 | `public/` | Web front end (static assets, served only after the Access check). `public/ui/` is the same UI code the gadget uses. |
 
 ## Deploy

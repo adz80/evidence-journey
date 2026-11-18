@@ -45,11 +45,11 @@ export async function renderVisit(env, caseId, seq, actor) {
   if (!visit || visit.kind !== "capture" || !visit.data.nav) throw new HttpError(404, "Not a page visit");
   if (visit.data.download) throw new HttpError(409, "This visit was a file download; there is no page to reconstruct");
 
-  const key = `cases/${caseId}/renders/${RENDER_VERSION}/${seq}.jpg`;
+  const key = renderKey(caseId, seq, visit);
   const existing = await env.EVIDENCE.get(key);
   if (existing) {
     await lg.appendEvent(caseId, "access", { actor, action: "view-reconstruction", visitSeq: seq });
-    return { body: existing.body, meta: { ...existing.customMetadata, cached: "true" } };
+    return { body: existing.body, meta: { ...existing.customMetadata, key, cached: "true" } };
   }
 
   const resources = await lg.resourcesForReplay(seq);
@@ -74,7 +74,21 @@ export async function renderVisit(env, caseId, seq, actor) {
     actor,
     label: "Reconstruction rendered offline from captured responses. Not a screenshot of the user's screen.",
   });
-  return { body: result.jpeg, meta: { ...meta, cached: "false", chainSeq: String(ev.seq) } };
+  return { body: result.jpeg, meta: { ...meta, key, cached: "false", chainSeq: String(ev.seq) } };
+}
+
+// Readable, deterministic R2 name for a visit's JPEG, e.g.
+//   cases/poc-001/reconstructions/v2/2026-11-18_13-42-05Z_chatgpt.com_visit-161.jpg
+// Deterministic so the same visit always maps to the same image (the render cache).
+export function renderKey(caseId, seq, visit) {
+  let host = "page";
+  try {
+    host = new URL(visit.data.request.url).hostname.replace(/[^a-z0-9.-]/gi, "_").slice(0, 80) || "page";
+  } catch {
+    /* keep default */
+  }
+  const when = new Date(Number(visit.ts) || 0).toISOString().replace(/\.\d+Z$/, "Z").replace("T", "_").replace(/:/g, "-");
+  return `cases/${caseId}/reconstructions/${RENDER_VERSION}/${when}_${host}_visit-${seq}.jpg`;
 }
 
 // ---------- matching captured responses to replay requests ----------

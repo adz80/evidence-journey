@@ -51,6 +51,17 @@ const CSS = `
 .ej-list { border-right: 1px solid var(--ej-line); overflow: auto; max-height: calc(100vh - 92px); }
 .ej-detail { overflow: auto; max-height: calc(100vh - 92px); padding: 16px 18px 40px; min-width: 0; }
 .ej-summary { padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--ej-line); }
+.ej-tools { border-bottom: 1px solid var(--ej-line); }
+.ej-tools:empty { display: none; }
+.ej-tools-row { padding: 8px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.ej-tools .ej-btn { font-size: 13px; padding: 5px 9px; }
+.ej-btn.danger { color: var(--ej-bad); border-color: var(--ej-bad); }
+.ej-btn.danger.solid { background: var(--ej-bad); color: #fff; }
+.ej-confirm { margin: 0 14px 10px; padding: 10px 0 0; border: 1px solid var(--ej-bad); border-radius: 8px; font-size: 13px; }
+.ej-confirm > div:first-child, .ej-confirm .ej-bad { padding: 0 12px; }
+.ej-bad { color: var(--ej-bad); margin-top: 6px; }
+.ej-input { font: inherit; color: inherit; background: var(--ej-bg); border: 1px solid var(--ej-line); border-radius: 8px;
+  padding: 6px 10px; flex: 1 1 160px; min-width: 0; }
 .ej-session { border-bottom: 1px solid var(--ej-line); }
 .ej-session-h { padding: 10px 14px 6px; font-size: 12px; color: var(--ej-subtle); font-weight: 600;
   position: sticky; top: 0; background: var(--ej-bg); z-index: 1; }

@@ -40,6 +40,15 @@ const api = {
     const blob = await res.blob();
     return { src: URL.createObjectURL(blob), meta: metaFromHeaders(res.headers) };
   },
+  resetCase: async (caseId, confirm) => {
+    const res = await fetch(`/api/cases/${enc(caseId)}/reset`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ confirm }),
+    });
+    return (await check(res)).json();
+  },
 };
 
 mountApp(document.getElementById("app"), api, { mode: "web" });

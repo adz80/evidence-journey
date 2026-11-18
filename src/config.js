@@ -19,6 +19,7 @@ export function getCases(env) {
       start: Date.parse(c.start), // NaN => case never active (fail safe)
       end: Date.parse(c.end),
       captureSent: c.captureSent !== false,
+      allowReset: c.allowReset === true,
     }));
 }
 

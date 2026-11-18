@@ -8,6 +8,7 @@
 //   record(caseId, seq)       -> ledger record (+ related sends/gaps, reconstructions)
 //   screenshot(caseId, seq)   -> { src, meta }
 //   verify(caseId, fromSeq)   -> { ok, checked, total, nextSeq, headHash, failure }
+//   resetCase(caseId, confirm) -> { ok, deletedRecords, deletedObjects }  (PoC cases with allowReset)
 
 import { injectStyles } from "./styles.js";
 import { el, fmtBytes, fmtDateTime, fmtDay, fmtTime, fmtUtc, hostOf, pathOf, plural, shortHash } from "./dom.js";
@@ -32,6 +33,8 @@ export async function mountApp(root, api, opts = {}) {
     shotState: "idle",
     shotError: null,
     verify: null,
+    bulk: null, // "save all reconstructions" progress
+    reset: null, // PoC "clear case data" panel
   };
 
   // ---- shell ---------------------------------------------------------------
@@ -52,7 +55,8 @@ export async function mountApp(root, api, opts = {}) {
   const banner = el("div", { class: "ej-banner" });
   const summary = el("div", { class: "ej-summary" });
   const list = el("div", { role: "list" });
-  const listWrap = el("div", { class: "ej-list" }, summary, list);
+  const tools = el("div", { class: "ej-tools" });
+  const listWrap = el("div", { class: "ej-list" }, summary, tools, list);
   const detail = el("div", { class: "ej-detail" });
   const main = el("div", { class: "ej-main" }, listWrap, detail);
   const shell = el("div", { class: "ej-shell" }, top, banner, main);
@@ -232,6 +236,163 @@ export async function mountApp(root, api, opts = {}) {
       t.gaps ? el("span", { class: "ej-pill warn" }, plural(t.gaps, "gap")) : null,
       el("span", { class: "ej-pill", title: j.head?.hash || "" }, `Chain #${j.head?.seq || 0} · ${shortHash(j.head?.hash)}`),
     );
+    if (!s.reset?.open) renderTools(); // don't wipe the confirm box while it's being typed in
+  }
+
+  // ---- tools: save all reconstructions, clear PoC data -------------------------
+  function pageVisits() {
+    const out = [];
+    for (const sess of s.journey?.sessions || []) for (const v of sess.visits) if (!v.download) out.push(v);
+    return out;
+  }
+
+  function renderTools() {
+    const c = s.cases.find((x) => x.id === s.caseId);
+    if (!s.journey || !c) return tools.replaceChildren();
+    const pages = pageVisits();
+    const b = s.bulk;
+    const r = s.reset;
+    const row = [];
+
+    if (b?.running) {
+      row.push(
+        el("span", { class: "ej-pill" }, spinner(), `Saving reconstruction ${Math.min(b.done + 1, b.total)} of ${b.total}…`),
+        el("button", { class: "ej-btn", disabled: !!b.stop, onclick: () => ((s.bulk.stop = true), renderTools()) }, b.stop ? "Stopping…" : "Stop"),
+      );
+    } else {
+      row.push(
+        el(
+          "button",
+          {
+            class: "ej-btn",
+            disabled: !pages.length || !!r?.running,
+            title: "Render every page visit offline from captured responses and store each JPEG in R2",
+            onclick: () => saveAll(),
+          },
+          `Save all reconstructions to R2 (${plural(pages.length, "page")})`,
+        ),
+      );
+      if (b?.result) row.push(el("span", { class: `ej-pill ${b.failed ? "warn" : "ok"}`, title: b.detail || "" }, b.result));
+    }
+
+    if (c.allowReset) {
+      row.push(el("div", { class: "ej-spacer" }));
+      if (r?.result) row.push(el("span", { class: "ej-pill ok" }, r.result));
+      if (!r?.open) {
+        row.push(
+          el(
+            "button",
+            { class: "ej-btn danger", disabled: !!b?.running, onclick: () => ((s.reset = { open: true }), renderTools()) },
+            "Clear PoC data…",
+          ),
+        );
+      }
+    }
+    const children = [el("div", { class: "ej-tools-row" }, row)];
+
+    if (c.allowReset && r?.open) {
+      const input = el("input", {
+        class: "ej-input",
+        placeholder: `Type ${c.id} to confirm`,
+        "aria-label": "Case ID to confirm",
+        autocomplete: "off",
+        disabled: !!r.running,
+        oninput: (e) => {
+          s.reset.text = e.target.value;
+          go.disabled = e.target.value.trim() !== c.id;
+        },
+      });
+      input.value = r.text || "";
+      const go = el(
+        "button",
+        { class: "ej-btn danger solid", disabled: r.running || (r.text || "").trim() !== c.id, onclick: () => runReset(c.id) },
+        r.running ? "Clearing…" : "Clear everything",
+      );
+      children.push(
+        el(
+          "div",
+          { class: "ej-confirm" },
+          el(
+            "div",
+            {},
+            el("strong", {}, `Clear all data for ${c.id}? `),
+            "This deletes every captured page, upload, gap and reconstruction for this case, in the ledger and in R2, and starts a new chain. It can't be undone. Capture carries on for new browsing.",
+          ),
+          r.error ? el("div", { class: "ej-bad" }, r.error) : null,
+          el(
+            "div",
+            { class: "ej-tools-row" },
+            input,
+            go,
+            el("button", { class: "ej-btn", disabled: !!r.running, onclick: () => ((s.reset = null), renderTools()) }, "Cancel"),
+          ),
+        ),
+      );
+      tools.replaceChildren(...children);
+      if (!r.running) input.focus();
+      return;
+    }
+    tools.replaceChildren(...children);
+  }
+
+  // Renders (or re-uses) the reconstruction of every page visit, one at a time.
+  // Each JPEG is stored in R2 by the Worker and hashed into the chain.
+  async function saveAll() {
+    if (s.bulk?.running) return;
+    const caseId = s.caseId;
+    const pages = pageVisits();
+    s.bulk = { running: true, done: 0, total: pages.length, saved: 0, reused: 0, failed: 0, stop: false };
+    renderTools();
+    const errors = [];
+    for (const v of pages) {
+      if (s.bulk.stop || s.caseId !== caseId) break;
+      try {
+        const shot = await api.screenshot(caseId, v.seq);
+        revoke(shot?.src);
+        if (shot?.meta?.cached) s.bulk.reused++;
+        else s.bulk.saved++;
+        v.rendered = true;
+      } catch (err) {
+        s.bulk.failed++;
+        errors.push(`#${v.seq} ${hostOf(v.url)}: ${msg(err)}`);
+      }
+      s.bulk.done++;
+      renderTools();
+    }
+    const b = s.bulk;
+    const stopped = b.done < b.total ? ` (stopped after ${b.done} of ${b.total})` : "";
+    s.bulk = {
+      running: false,
+      failed: b.failed,
+      result: `${b.saved} new, ${b.reused} already saved${b.failed ? `, ${b.failed} failed` : ""}${stopped}`,
+      detail: errors.join("\n"),
+    };
+    renderList();
+    renderTools();
+  }
+
+  async function runReset(caseId) {
+    if (!s.reset || s.reset.running) return;
+    s.reset.running = true;
+    s.reset.error = null;
+    renderTools();
+    try {
+      const out = await api.resetCase(caseId, caseId);
+      s.reset = { result: `Cleared ${plural(out.deletedRecords ?? 0, "record")} and ${plural(out.deletedObjects ?? 0, "stored file")}` };
+      s.bulk = null;
+      s.verify = null;
+      s.selectedSeq = null;
+      s.record = null;
+      clearShot();
+      main.classList.remove("show-detail");
+      renderVerify();
+      renderDetail();
+      await loadJourney();
+    } catch (err) {
+      s.reset.running = false;
+      s.reset.error = `Could not clear: ${msg(err)}`;
+      renderTools();
+    }
   }
 
   function renderList() {
@@ -456,6 +617,7 @@ export async function mountApp(root, api, opts = {}) {
           m.browser ? el("span", {}, m.browser) : null,
           m.chainSeq ? el("span", {}, `Chain #${m.chainSeq}`) : null,
           m.cached ? el("span", {}, "Stored render") : null,
+          m.key ? el("span", { class: "ej-mono" }, `Saved in R2: ${m.key}`) : null,
         ),
       ];
     }

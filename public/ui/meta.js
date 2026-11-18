@@ -14,5 +14,6 @@ export function metaFromHeaders(headers) {
     viewport: g("viewport") || null,
     cached: g("cached") === "true",
     chainSeq: num(g("chain-seq")),
+    key: g("key") || null,
   };
 }

@@ -64,7 +64,10 @@
         "subject": "headoffice@chewbacca.dev",
         "start": "2026-11-18T00:00:00Z",
         "end": "2026-12-18T00:00:00Z",
-        "captureSent": true
+        "captureSent": true,
+        // PoC only: lets an investigator clear all of this case's data from the UI.
+        // Never set this on a real case.
+        "allowReset": true
       }
     ]
   }

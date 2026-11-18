@@ -1,6 +1,7 @@
 // Evidence UI + API on EVIDENCE_HOST. Every request must carry a valid Access JWT.
-// The API cannot change or delete evidence. The only writes it makes are
-// append-only: reconstruction records and access (audit) records.
+// The API cannot change evidence. Its writes are append-only reconstruction and
+// access (audit) records, plus one PoC-only exception: POST .../reset clears a
+// case whose config has allowReset: true (never set on a real case).
 
 import { findCase, getCases, isActive, ledger } from "./config.js";
 import { verifyAccess } from "./access.js";
@@ -21,9 +22,12 @@ export async function handleApi(request, env) {
 
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/api/")) return serveAsset(request, env);
-  if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
+  // The only write: POST /api/cases/:id/reset, for PoC cases with allowReset.
+  const isReset = request.method === "POST" && /^\/api\/cases\/[^/]+\/reset$/.test(url.pathname);
+  if (!isReset && request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
 
   try {
+    if (isReset) return await resetCase(request, url, env, actor);
     return await route(url, env, actor);
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 500;
@@ -46,6 +50,7 @@ async function route(url, env, actor) {
         start: Number.isFinite(c.start) ? new Date(c.start).toISOString() : null,
         end: Number.isFinite(c.end) ? new Date(c.end).toISOString() : null,
         captureSent: c.captureSent,
+        allowReset: c.allowReset,
         active: isActive(c),
       })),
     });
@@ -103,12 +108,54 @@ async function route(url, env, actor) {
       "x-evidence-browser": meta.browser || "",
       "x-evidence-viewport": meta.viewport || "",
       "x-evidence-cached": meta.cached || "false",
+      "x-evidence-key": meta.key || "",
     };
     if (meta.chainSeq) headers["x-evidence-chain-seq"] = meta.chainSeq;
     return new Response(body, { headers });
   }
 
   throw new HttpError(404, "Not found");
+}
+
+// PoC reset: delete every stored object for the case (bodies and reconstructions)
+// and clear its ledger. Requires {"confirm": "<caseId>"} and allowReset on the case.
+async function resetCase(request, url, env, actor) {
+  const caseId = decodeURIComponent(url.pathname.split("/")[3]);
+  const c = findCase(env, caseId);
+  if (!c) throw new HttpError(404, "Unknown case");
+  if (!c.allowReset) throw new HttpError(403, "This case cannot be cleared");
+  // Browsers send Origin on POST; only accept our own page (the gadget server sends none).
+  const origin = request.headers.get("origin");
+  if (origin && origin !== `https://${env.EVIDENCE_HOST}`) throw new HttpError(403, "Cross-site request refused");
+  if (!(request.headers.get("content-type") || "").includes("application/json")) throw new HttpError(415, "Send JSON");
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  if (body?.confirm !== caseId) throw new HttpError(400, `To clear this case, send {"confirm": "${caseId}"}`);
+  const at = Date.now();
+  const deletedObjects = await deletePrefix(env, `cases/${caseId}/`, at);
+  const r = await ledger(env, caseId).reset(caseId, { actor, at, deletedObjects });
+  console.log(`case ${caseId} cleared by ${actor.type}:${actor.id}: ${r.deletedRecords} records, ${deletedObjects} objects`);
+  return json({ ok: true, deletedRecords: r.deletedRecords, deletedObjects, at: new Date(at).toISOString() });
+}
+
+// Deletes objects under prefix uploaded before `before` (later uploads belong to new captures).
+async function deletePrefix(env, prefix, before) {
+  let cursor;
+  let n = 0;
+  do {
+    const page = await env.EVIDENCE.list({ prefix, cursor, limit: 1000 });
+    const keys = page.objects.filter((o) => o.uploaded.getTime() < before).map((o) => o.key);
+    if (keys.length) {
+      await env.EVIDENCE.delete(keys);
+      n += keys.length;
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return n;
 }
 
 async function preview(env, body) {
