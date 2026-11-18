@@ -14,6 +14,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { findCase, idleMs } from "./config.js";
 import { sha256Hex, stableStringify } from "./util.js";
+import { annotateJourney } from "./insights.js";
 
 const GENESIS = "0".repeat(64);
 const MAX_TS = Number.MAX_SAFE_INTEGER;
@@ -209,8 +210,13 @@ export class CaseLedger extends DurableObject {
           backgroundSends: 0,
           gaps: (d.gaps || []).length,
           rendered: rendered.has(row.seq),
+          policyId: d.gateway?.policyId || null,
+          disposition: d.response?.disposition || null,
+          sentBytes: 0,
+          maxSendBytes: 0,
         };
         if (row.sent === 2) v.sends.push(sendSummary(row, d));
+        if (row.sent > 0) addBytes(v, d);
         cur.visits.push(v);
         cur.end = row.ts;
         byUrl.set(stripHash(d.request.url), v);
@@ -225,10 +231,14 @@ export class CaseLedger extends DurableObject {
         totals.sends++;
         if (attach) {
           if (attach.sends.length < 50) attach.sends.push(sendSummary(row, d));
+          addBytes(attach, d);
           cur.end = Math.max(cur.end, row.ts);
         } else unattributed.sends++;
       } else if (row.kind === "capture" && row.sent === 1) {
-        if (attach) attach.backgroundSends++;
+        if (attach) {
+          attach.backgroundSends++;
+          addBytes(attach, d);
+        }
       }
       if (row.has_gap) {
         totals.gaps++;
@@ -236,7 +246,15 @@ export class CaseLedger extends DurableObject {
         else unattributed.gaps++;
       }
     }
-    return { sessions, totals, unattributed, head: this.head() };
+    const result = { sessions, totals, unattributed, head: this.head() };
+    try {
+      result.insights = annotateJourney(result, this.env);
+    } catch (err) {
+      // Never let the detectors break the journey view.
+      console.error("annotateJourney failed", err?.stack || String(err));
+      result.insights = { error: String(err) };
+    }
+    return result;
   }
 
   record(seq) {
@@ -390,7 +408,14 @@ function sendSummary(row, d) {
     sha256: b.sha256 || null,
     key: b.key || null,
     redaction: b.redaction || null,
+    fileNames: b.fileNames || [],
   };
+}
+
+function addBytes(v, d) {
+  const n = Number(d.request?.body?.totalBytes) || 0;
+  v.sentBytes += n;
+  if (n > v.maxSendBytes) v.maxSendBytes = n;
 }
 
 function stripHash(u) {

@@ -16,6 +16,7 @@ import {
   maybeDecompress,
   redactBody,
   sha256Hex,
+  uploadFileNames,
 } from "./util.js";
 
 const NO_BODY_STATUS = new Set([101, 204, 205, 304]);
@@ -177,9 +178,11 @@ async function persist(env, plan, request, response, startedAt, sentPromise, bod
   if (sentPromise) {
     const r = await sentPromise;
     if (r.total > 0) {
+      const fileNames = uploadFileNames(r.bytes, reqType, request.headers);
       const { bytes, redaction } = redactBody(r.bytes, reqType);
       sent = await storeBody(env, `${prefix}/request.bin`, bytes, reqType, plan.caseId, gaps, "request");
       Object.assign(sent, { totalBytes: r.total, truncated: r.truncated, redaction });
+      if (fileNames.length) sent.fileNames = fileNames;
       if (r.truncated) {
         gaps.push(
           r.error

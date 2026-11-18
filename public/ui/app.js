@@ -4,20 +4,27 @@
 //   status?()                 -> { connected: boolean }        (gadget only)
 //   me()                      -> { actor: { type, id } }
 //   cases()                   -> { cases: [...] }
-//   journey(caseId)           -> { sessions, totals, unattributed, head }
+//   journey(caseId)           -> { sessions, totals, unattributed, head, insights }
 //   record(caseId, seq)       -> ledger record (+ related sends/gaps, reconstructions)
 //   screenshot(caseId, seq)   -> { src, meta }
 //   verify(caseId, fromSeq)   -> { ok, checked, total, nextSeq, headHash, failure }
 //   resetCase(caseId, confirm) -> { ok, deletedRecords, deletedObjects }  (PoC cases with allowReset)
+//
+// Layout: filter rail | journey list | detail. Below 1200px the rail folds above the
+// list; below 820px the list and detail become separate screens.
+// Keys: j / k next / previous visit, / focus search.
 
 import { injectStyles } from "./styles.js";
 import { el, fmtBytes, fmtDateTime, fmtDay, fmtTime, fmtUtc, hostOf, pathOf, plural, shortHash } from "./dom.js";
+import { SIGNALS, SIGNAL_ORDER, activeFilterCount, categoryColor, matches, newFilters } from "./insights.js";
+import { renderChart, renderRail } from "./filters.js";
 
 const POLL_MS = 10_000;
 
 export async function mountApp(root, api, opts = {}) {
   const mode = opts.mode || "web";
-  injectStyles(root.ownerDocument || document);
+  const doc = root.ownerDocument || document;
+  injectStyles(doc);
   root.classList.add("ej-root");
 
   const s = {
@@ -25,6 +32,7 @@ export async function mountApp(root, api, opts = {}) {
     cases: [],
     caseId: null,
     journey: null,
+    visits: [], // flat, chronological
     visitIndex: new Map(),
     selectedSeq: null,
     record: null,
@@ -35,10 +43,27 @@ export async function mountApp(root, api, opts = {}) {
     verify: null,
     bulk: null, // "save all reconstructions" progress
     reset: null, // PoC "clear case data" panel
+    f: newFilters(),
+    railCollapsed: (doc.defaultView?.innerWidth || 1400) < 1200,
+    shown: [], // seqs currently listed, in display order (for j/k)
   };
 
   // ---- shell ---------------------------------------------------------------
   const caseSelect = el("select", { class: "ej-select", "aria-label": "Case", onchange: (e) => switchCase(e.target.value) });
+  let searchTimer = null;
+  const search = el("input", {
+    class: "ej-search",
+    type: "search",
+    placeholder: "Search sites, titles, search terms, file names…  ( / )",
+    "aria-label": "Search the journey",
+    oninput: (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        s.f.q = e.target.value.trim().toLowerCase();
+        renderAll();
+      }, 150);
+    },
+  });
   const verifyBtn = el("button", { class: "ej-btn", onclick: () => runVerify() }, "Verify chain");
   const verifyPill = el("span", { class: "ej-pill" }, "Chain not checked");
   const whoPill = el("span", { class: "ej-pill" }, "…");
@@ -47,20 +72,25 @@ export async function mountApp(root, api, opts = {}) {
     { class: "ej-top" },
     el("div", { class: "ej-brand" }, el("span", { class: "ej-dot" }), "Insider Risk Incident Response"),
     caseSelect,
-    el("div", { class: "ej-spacer" }),
+    search,
     verifyPill,
     verifyBtn,
     whoPill,
   );
   const banner = el("div", { class: "ej-banner" });
+  const rail = el("aside", { class: "ej-rail", "aria-label": "Filters" });
   const summary = el("div", { class: "ej-summary" });
-  const list = el("div", { role: "list" });
+  const chart = el("div", { class: "ej-chartwrap" });
   const tools = el("div", { class: "ej-tools" });
-  const listWrap = el("div", { class: "ej-list" }, summary, tools, list);
+  const list = el("div", { role: "list" });
+  const listWrap = el("div", { class: "ej-list" }, summary, chart, tools, list);
+  const side = el("div", { class: "ej-side" }, rail, listWrap);
   const detail = el("div", { class: "ej-detail" });
-  const main = el("div", { class: "ej-main" }, listWrap, detail);
+  const main = el("div", { class: "ej-main" }, side, detail);
   const shell = el("div", { class: "ej-shell" }, top, banner, main);
   root.replaceChildren(shell);
+
+  doc.addEventListener("keydown", onKey);
 
   // ---- boot ----------------------------------------------------------------
   try {
@@ -94,33 +124,39 @@ export async function mountApp(root, api, opts = {}) {
   // ---- data ----------------------------------------------------------------
   async function loadJourney() {
     try {
-      s.journey = await api.journey(s.caseId);
-      indexVisits();
-      renderSummary();
-      renderList();
+      setJourney(await api.journey(s.caseId));
+      renderAll();
     } catch (err) {
       list.replaceChildren(el("div", { class: "ej-error" }, `Could not load the journey: ${msg(err)}`));
     }
   }
 
+  function setJourney(j) {
+    s.journey = j;
+    s.visits = [];
+    s.visitIndex = new Map();
+    for (const sess of j?.sessions || []) {
+      for (const v of sess.visits) {
+        v.sessionId = sess.id;
+        v.signals = v.signals || [];
+        v.category = v.category || "Uncategorised";
+        s.visits.push(v);
+        s.visitIndex.set(v.seq, v);
+      }
+    }
+  }
+
   async function poll() {
-    if (!s.caseId || document.hidden || s.verify?.running) return;
+    if (!s.caseId || doc.hidden || s.verify?.running || s.bulk?.running) return;
     try {
       const j = await api.journey(s.caseId);
       if (j?.head?.seq !== s.journey?.head?.seq) {
-        s.journey = j;
-        indexVisits();
-        renderSummary();
-        renderList();
+        setJourney(j);
+        renderAll();
       }
     } catch {
       /* transient; next poll retries */
     }
-  }
-
-  function indexVisits() {
-    s.visitIndex = new Map();
-    for (const sess of s.journey?.sessions || []) for (const v of sess.visits) s.visitIndex.set(v.seq, v);
   }
 
   async function switchCase(id) {
@@ -128,6 +164,8 @@ export async function mountApp(root, api, opts = {}) {
     s.selectedSeq = null;
     s.record = null;
     s.verify = null;
+    s.f = newFilters();
+    search.value = "";
     clearShot();
     renderBanner();
     renderVerify();
@@ -144,6 +182,7 @@ export async function mountApp(root, api, opts = {}) {
     main.classList.add("show-detail");
     renderList();
     renderDetail();
+    detail.scrollTop = 0;
     try {
       const rec = await api.record(s.caseId, seq);
       if (s.selectedSeq !== seq) return;
@@ -212,7 +251,69 @@ export async function mountApp(root, api, opts = {}) {
     renderVerify();
   }
 
+  function onKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    if (e.key === "/" && !typing) {
+      e.preventDefault();
+      search.focus();
+      return;
+    }
+    if (e.key === "Escape" && t === search) {
+      search.blur();
+      return;
+    }
+    if (typing || (e.key !== "j" && e.key !== "k") || !s.shown.length) return;
+    e.preventDefault();
+    const i = s.shown.indexOf(s.selectedSeq);
+    const next = e.key === "j" ? (i < 0 ? 0 : Math.min(s.shown.length - 1, i + 1)) : i < 0 ? 0 : Math.max(0, i - 1);
+    if (s.shown[next] !== s.selectedSeq) {
+      selectVisit(s.shown[next]).catch(() => {});
+      list.querySelector(`[data-seq="${s.shown[next]}"]`)?.scrollIntoView({ block: "nearest" });
+    }
+  }
+
   // ---- rendering -------------------------------------------------------------
+  function renderAll() {
+    renderRailNow();
+    renderSummary();
+    renderChartNow();
+    renderList();
+  }
+
+  function onFilterChange(o = {}) {
+    if (o.clearSearch) search.value = "";
+    renderAll();
+  }
+
+  function renderRailNow() {
+    renderRail(rail, {
+      visits: s.visits,
+      f: s.f,
+      insights: s.journey?.insights,
+      collapsed: s.railCollapsed,
+      onChange: onFilterChange,
+      onToggle: () => {
+        s.railCollapsed = !s.railCollapsed;
+        renderRailNow();
+      },
+    });
+  }
+
+  function renderChartNow() {
+    if (!s.visits.length) return chart.replaceChildren();
+    renderChart(chart, {
+      visits: s.visits,
+      f: s.f,
+      insights: s.journey?.insights,
+      onHour: (h) => {
+        s.f.hours.has(h) ? s.f.hours.delete(h) : s.f.hours.add(h);
+        renderAll();
+      },
+    });
+  }
+
   function renderBanner() {
     const c = s.cases.find((x) => x.id === s.caseId);
     banner.replaceChildren(
@@ -224,26 +325,50 @@ export async function mountApp(root, api, opts = {}) {
     );
   }
 
+  function filtered() {
+    return s.visits.filter((v) => matches(v, s.f));
+  }
+
   function renderSummary() {
     const j = s.journey;
     if (!j) return summary.replaceChildren();
     const t = j.totals || {};
+    const shown = filtered();
+    const high = shown.filter((v) => v.riskLevel === "high").length;
+    const med = shown.filter((v) => v.riskLevel === "medium").length;
+    const nf = activeFilterCount(s.f);
+    const sort = el(
+      "select",
+      {
+        class: "ej-select ej-sort",
+        "aria-label": "Sort",
+        onchange: (e) => {
+          s.f.sort = e.target.value;
+          renderList();
+        },
+      },
+      el("option", { value: "time" }, "Newest sessions first"),
+      el("option", { value: "risk" }, "Highest risk first"),
+    );
+    sort.value = s.f.sort;
     summary.replaceChildren(
+      el("span", { class: "ej-pill" }, nf ? `${shown.length} of ${plural(s.visits.length, "visit")}` : plural(t.visits || 0, "page visit")),
       el("span", { class: "ej-pill" }, plural(j.sessions.length, "session")),
-      el("span", { class: "ej-pill" }, plural(t.visits || 0, "page visit")),
+      high ? el("span", { class: "ej-pill bad" }, `${high} high risk`) : null,
+      med ? el("span", { class: "ej-pill warn" }, `${med} medium`) : null,
       t.sends ? el("span", { class: "ej-pill bad" }, plural(t.sends, "upload/form", "uploads/forms")) : null,
       t.downloads ? el("span", { class: "ej-pill brand" }, plural(t.downloads, "download")) : null,
       t.gaps ? el("span", { class: "ej-pill warn" }, plural(t.gaps, "gap")) : null,
       el("span", { class: "ej-pill", title: j.head?.hash || "" }, `Chain #${j.head?.seq || 0} · ${shortHash(j.head?.hash)}`),
+      el("div", { class: "ej-spacer" }),
+      sort,
     );
     if (!s.reset?.open) renderTools(); // don't wipe the confirm box while it's being typed in
   }
 
   // ---- tools: save all reconstructions, clear PoC data -------------------------
   function pageVisits() {
-    const out = [];
-    for (const sess of s.journey?.sessions || []) for (const v of sess.visits) if (!v.download) out.push(v);
-    return out;
+    return s.visits.filter((v) => !v.download);
   }
 
   function renderTools() {
@@ -395,10 +520,12 @@ export async function mountApp(root, api, opts = {}) {
     }
   }
 
+  // ---- journey list ------------------------------------------------------------
   function renderList() {
     const j = s.journey;
     if (!j) return;
-    if (!j.sessions.length) {
+    s.shown = [];
+    if (!s.visits.length) {
       list.replaceChildren(
         el(
           "div",
@@ -408,21 +535,61 @@ export async function mountApp(root, api, opts = {}) {
       );
       return;
     }
-    const sessions = [...j.sessions].reverse();
-    list.replaceChildren(
-      ...sessions.map((sess) =>
+    const shown = filtered();
+    if (!shown.length) {
+      list.replaceChildren(
         el(
           "div",
-          { class: "ej-session" },
+          { class: "ej-empty" },
+          "Nothing matches these filters. ",
+          el(
+            "button",
+            {
+              class: "ej-link",
+              onclick: () => {
+                s.f = { ...newFilters(), sort: s.f.sort };
+                onFilterChange({ clearSearch: true });
+              },
+            },
+            "Clear filters",
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (s.f.sort === "risk") {
+      const sorted = [...shown].sort((a, b) => (b.risk || 0) - (a.risk || 0) || b.ts - a.ts);
+      s.shown = sorted.map((v) => v.seq);
+      list.replaceChildren(
+        el("div", { class: "ej-session" }, el("div", { class: "ej-session-h" }, `Highest risk first · ${plural(sorted.length, "visit")}`), sorted.map((v) => renderVisitRow(v, true))),
+      );
+    } else {
+      const keep = new Set(shown.map((v) => v.seq));
+      const sessions = [...j.sessions].reverse();
+      const blocks = [];
+      for (const sess of sessions) {
+        const vs = sess.visits.filter((v) => keep.has(v.seq));
+        if (!vs.length) continue;
+        const risky = vs.filter((v) => v.riskLevel === "high" || v.riskLevel === "medium").length;
+        for (const v of vs) s.shown.push(v.seq);
+        blocks.push(
           el(
             "div",
-            { class: "ej-session-h" },
-            `Session ${sess.id} · ${fmtDay(sess.start)} · ${fmtTime(sess.start)}–${fmtTime(sess.end)} · ${plural(sess.visits.length, "page")}`,
+            { class: "ej-session" },
+            el(
+              "div",
+              { class: "ej-session-h" },
+              `Session ${sess.id} · ${fmtDay(sess.start)} · ${fmtTime(sess.start)}–${fmtTime(sess.end)} · `,
+              vs.length === sess.visits.length ? plural(sess.visits.length, "page") : `${vs.length} of ${plural(sess.visits.length, "page")}`,
+              risky ? el("span", { class: "ej-risk medium" }, `${risky} flagged`) : null,
+            ),
+            vs.map((v) => renderVisitRow(v, false)),
           ),
-          ...sess.visits.map(renderVisitRow),
-        ),
-      ),
-    );
+        );
+      }
+      list.replaceChildren(...blocks);
+    }
     if (j.unattributed?.sends || j.unattributed?.gaps) {
       list.append(
         el(
@@ -434,26 +601,30 @@ export async function mountApp(root, api, opts = {}) {
     }
   }
 
-  function renderVisitRow(v) {
+  function renderVisitRow(v, withDate) {
     const parent = v.parentSeq ? s.visitIndex.get(v.parentSeq) : null;
-    const uploads = v.sends.filter((x) => x.label === "upload").length;
-    const forms = v.sends.filter((x) => x.label === "form").length;
+    const sigs = [...v.signals].sort((a, b) => SIGNAL_ORDER.indexOf(a.id) - SIGNAL_ORDER.indexOf(b.id));
     return el(
       "button",
       {
-        class: `ej-visit${s.selectedSeq === v.seq ? " sel" : ""}`,
+        class: `ej-visit${s.selectedSeq === v.seq ? " sel" : ""} r-${v.riskLevel || "none"}`,
         role: "listitem",
+        "data-seq": v.seq,
         onclick: () => selectVisit(v.seq),
       },
-      el("span", { class: "ej-visit-time" }, fmtTime(v.ts)),
+      el("span", { class: "ej-visit-time" }, withDate ? [fmtShortDay(v.ts), el("br", {}), fmtTime(v.ts)] : fmtTime(v.ts)),
       el("span", { class: "ej-visit-title" }, v.title || hostOf(v.url)),
+      v.risk ? el("span", { class: `ej-risk ${v.riskLevel}`, title: `Risk score ${v.risk}` }, `${v.riskLevel} · ${v.risk}`) : el("span", {}),
       el("span", { class: "ej-visit-url" }, `${hostOf(v.url)}${pathOf(v.url)}`),
+      v.searchTerms ? el("span", { class: "ej-visit-q" }, `⌕ “${trim(v.searchTerms, 80)}”`) : null,
       el(
         "span",
         { class: "ej-visit-chips" },
-        v.download ? el("span", { class: "ej-chip dl" }, "⬇ download") : null,
-        uploads ? el("span", { class: "ej-chip upload" }, `⬆ upload ×${uploads}`) : null,
-        forms ? el("span", { class: "ej-chip form" }, `✎ form ×${forms}`) : null,
+        el("span", { class: "ej-chip cat", style: `--c:${categoryColor(v.category)}` }, v.category),
+        sigs.map((x) => {
+          const m = SIGNALS[x.id] || { label: x.id, icon: "•", tone: "info" };
+          return el("span", { class: `ej-chip sig ${m.tone}`, title: x.detail || m.desc }, `${m.icon} ${m.label}`);
+        }),
         v.gaps ? el("span", { class: "ej-chip gap" }, `⚠ ${plural(v.gaps, "gap")}`) : null,
         v.status && v.status >= 400 ? el("span", { class: "ej-chip" }, `HTTP ${v.status}`) : null,
         parent ? el("span", { class: "ej-chip" }, `↳ from ${trim(parent.title || hostOf(parent.url), 28)}`) : null,
@@ -490,6 +661,7 @@ export async function mountApp(root, api, opts = {}) {
     }
   }
 
+  // ---- detail panel --------------------------------------------------------------
   function renderDetail() {
     const back = el("button", { class: "ej-btn ej-back", onclick: () => main.classList.remove("show-detail") }, "← Back to journey");
     if (!s.selectedSeq) {
@@ -497,7 +669,8 @@ export async function mountApp(root, api, opts = {}) {
         el(
           "div",
           { class: "ej-empty" },
-          "Select a page visit to see its reconstruction, what was sent from it, and its place in the evidence chain.",
+          el("p", {}, "Select a page visit to see why it was flagged, its reconstruction, what was sent from it, and its place in the evidence chain."),
+          el("p", { class: "ej-hint" }, "Start with Risk → High or a behaviour in the filter panel. Keys: j / k to move, / to search."),
         ),
       );
       return;
@@ -519,6 +692,7 @@ export async function mountApp(root, api, opts = {}) {
       el("h2", { class: "ej-h2" }, res.title || hostOf(req.url) || `Record #${r.seq}`),
       el("div", { class: "ej-url" }, `${req.method || ""} ${req.url || ""}`),
       el("div", { class: "ej-url" }, `${fmtDateTime(r.ts)} local · ${fmtUtc(r.ts)}`),
+      renderFlags(s.visitIndex.get(r.seq)),
       renderShot(d),
       renderSends(r),
       renderGaps(r),
@@ -567,6 +741,81 @@ export async function mountApp(root, api, opts = {}) {
             ["Gateway policy", mono(d.gateway?.policyId)],
           ]),
         ),
+      ),
+    );
+  }
+
+  function renderFlags(v) {
+    if (!v) return null;
+    const ins = s.journey?.insights || {};
+    const sigs = [...v.signals].sort((a, b) => SIGNAL_ORDER.indexOf(a.id) - SIGNAL_ORDER.indexOf(b.id));
+    const src = { gateway: "Cloudflare Gateway", corporate: "your corporate domains", "built-in": "built-in list", none: "no match" }[v.categorySource] || v.categorySource || "built-in list";
+    const linked = v.chainFromSeq ? s.visitIndex.get(v.chainFromSeq) : null;
+    return section(
+      v.signals.length ? "Why this was flagged" : "Behaviour",
+      el(
+        "div",
+        { class: "ej-card ej-flags" },
+        el(
+          "div",
+          { class: "ej-flags-h" },
+          v.risk ? el("span", { class: `ej-risk ${v.riskLevel}` }, `${v.riskLevel} risk · score ${v.risk}`) : el("span", { class: "ej-risk none" }, "No behaviours flagged"),
+          el("span", { class: "ej-chip cat", style: `--c:${categoryColor(v.category)}` }, v.category),
+          el("span", { class: "ej-hint" }, `Category from ${src}`),
+          el(
+            "button",
+            {
+              class: "ej-link",
+              onclick: () => {
+                s.f.categories.add(v.category);
+                onFilterChange();
+              },
+            },
+            "Show all in this category",
+          ),
+        ),
+        sigs.length
+          ? el(
+              "ul",
+              { class: "ej-flag-list" },
+              sigs.map((x) => {
+                const m = SIGNALS[x.id] || { label: x.id, icon: "•", tone: "info", desc: "" };
+                return el(
+                  "li",
+                  {},
+                  el("span", { class: `ej-sig-i ${m.tone}` }, m.icon),
+                  el("div", {}, el("strong", {}, m.label), x.detail ? el("span", {}, ` — ${x.detail}`) : null, el("div", { class: "ej-hint" }, m.desc)),
+                  el(
+                    "button",
+                    {
+                      class: "ej-link",
+                      title: "Filter the journey to this behaviour",
+                      onclick: () => {
+                        s.f.signals.add(x.id);
+                        onFilterChange();
+                      },
+                    },
+                    "Filter",
+                  ),
+                );
+              }),
+            )
+          : null,
+        kv(
+          [
+            v.searchTerms ? ["Search terms", el("span", { class: "ej-q" }, v.searchTerms)] : null,
+            v.fileNames?.length ? ["File names", v.fileNames.join(", ")] : null,
+            v.sentBytes ? ["Data sent", `${fmtBytes(v.sentBytes)} across ${plural(v.sends.length + (v.backgroundSends || 0), "request")}`] : null,
+            ["Local time", `${fmtDay(v.ts)} ${fmtTime(v.ts)} · ${pad2(v.local?.hour)}:xx in ${ins.tz || "UTC"}${v.local?.afterHours ? " (after hours)" : ""}`],
+            linked
+              ? [
+                  "Linked download",
+                  el("button", { class: "ej-link", onclick: () => selectVisit(linked.seq) }, `#${linked.seq} ${trim(linked.title || hostOf(linked.url), 50)}`),
+                ]
+              : null,
+          ].filter(Boolean),
+        ),
+        el("div", { class: "ej-hint" }, "A behaviour is a lead to review, not proof of wrongdoing. Check the reconstruction and what was sent before drawing conclusions."),
       ),
     );
   }
@@ -645,17 +894,20 @@ export async function mountApp(root, api, opts = {}) {
             el("span", { class: "ej-url" }, `${fmtBytes(x.bytes)}${x.truncated ? ` (stored ${fmtBytes(x.storedBytes)}, cut off)` : ""}`),
           ),
           el("div", { class: "ej-url" }, x.url),
-          kv([
-            ["Content type", x.contentType || "—"],
-            ["Secrets", x.redaction || "—"],
-            ["SHA-256", mono(x.sha256)],
-            ["Record", `#${x.seq}`],
-          ]),
+          kv(
+            [
+              x.fileNames?.length ? ["File names", x.fileNames.join(", ")] : null,
+              ["Content type", x.contentType || "—"],
+              ["Secrets", x.redaction || "—"],
+              ["SHA-256", mono(x.sha256)],
+              ["Record", `#${x.seq}`],
+            ].filter(Boolean),
+          ),
           x.preview ? el("pre", { class: "ej-pre" }, x.preview) : null,
         ),
       ),
       rel.backgroundSends
-        ? el("div", { class: "ej-url" }, `Plus ${plural(rel.backgroundSends, "background data request")} (analytics, app sync and similar) in the same window.`)
+        ? el("div", { class: "ej-url" }, `Plus ${plural(rel.backgroundSends, "background data request")} (analytics, app sync, chat messages and similar) in the same window.`)
         : null,
     );
   }
@@ -675,6 +927,7 @@ export async function mountApp(root, api, opts = {}) {
       sha256: b.sha256,
       redaction: b.redaction,
       preview: b.preview,
+      fileNames: b.fileNames,
     };
   }
 
@@ -761,6 +1014,14 @@ function fetchLine(f) {
   return [f.mode && `mode=${f.mode}`, f.dest && `dest=${f.dest}`, f.site && `site=${f.site}`, f.user && `user=${f.user}`]
     .filter(Boolean)
     .join(" · ") || "—";
+}
+
+function fmtShortDay(ts) {
+  return new Date(ts).toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+function pad2(n) {
+  return n == null ? "--" : String(n).padStart(2, "0");
 }
 
 function spinner() {

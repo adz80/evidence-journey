@@ -158,11 +158,47 @@ export function classifySend(request, sent) {
   if (!sent || !sent.totalBytes) return { level: 0, label: null };
   const ct = (sent.contentType || "").toLowerCase();
   if (ct.startsWith("multipart/form-data")) return { level: 2, label: "upload" };
+  if (sent.fileNames?.length) return { level: 2, label: "upload" };
   if (request.headers.get("sec-fetch-mode") === "navigate") return { level: 2, label: "form" };
   if (ct.startsWith("application/octet-stream")) return { level: 2, label: "upload" };
   if (/^(image|video|audio)\/|^application\/(pdf|zip|x-zip|vnd\.|msword)/.test(ct)) return { level: 2, label: "upload" };
   if (sent.totalBytes >= 50 * 1024) return { level: 2, label: "upload" };
   return { level: 1, label: "data" };
+}
+
+// File names of an upload: multipart part headers, plus common request headers.
+// Read from the (capped) captured copy only; never affects the upstream request.
+export function uploadFileNames(bytes, contentType, headers) {
+  const out = new Set();
+  const add = (n) => {
+    n = String(n || "").trim();
+    if (n && n.length <= 255) out.add(n);
+  };
+  try {
+    for (const h of ["content-disposition", "x-file-name", "x-filename", "x-goog-upload-file-name", "x-upload-file-name"]) {
+      const v = headers.get(h);
+      if (!v) continue;
+      const m = /filename\*?\s*=\s*(?:[\w-]+'[^']*')?"?([^";]+)"?/i.exec(v);
+      add(m ? safeDecode(m[1]) : h === "content-disposition" ? null : safeDecode(v));
+    }
+    if (/^multipart\/form-data/i.test(contentType || "") && bytes?.byteLength) {
+      const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(0, Math.min(bytes.byteLength, 2 * 1024 * 1024)));
+      const re = /content-disposition:[^\r\n]*?filename\*?\s*=\s*(?:[\w-]+'[^']*')?"([^"\r\n]*)"/gi;
+      let m;
+      while ((m = re.exec(text)) && out.size < 20) add(safeDecode(m[1]));
+    }
+  } catch {
+    /* best effort */
+  }
+  return [...out].slice(0, 20);
+}
+
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
 }
 
 export function extractTitle(bytes, contentType) {

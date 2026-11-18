@@ -54,6 +54,19 @@
     // Idle gap that splits browsing sessions in the journey view.
     "SESSION_IDLE_MINUTES": "30",
 
+    // Behaviour detectors (see src/insights.js). Signals are leads to review, not findings.
+    // Working hours in WORK_TZ; anything outside (or on days outside WORK_DAYS, Mon=1) is "after hours".
+    "WORK_HOURS": "08:00-18:00",
+    "WORK_DAYS": "1-5",
+    "WORK_TZ": "Europe/London",
+    // The organisation's own domains: categorised "Corporate (work)" and never treated as personal.
+    "CORP_DOMAINS": ["chewbacca.dev"],
+    // Optional: Gateway policy ID -> Cloudflare content category name, for per-category Forward rules.
+    "CATEGORY_POLICIES": {},
+    // Watch lists for search terms. Agree these with HR/Legal before any real case.
+    // Leave a list out to use the built-in defaults.
+    "WATCH_TERMS": {},
+
     // Cases. Capture only happens for the subject's identity email, and only
     // between start and end (ISO 8601, UTC). PoC: the subject must be you or a
     // test account. Changes are made by editing this list and redeploying.
