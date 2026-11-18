@@ -1,0 +1,51 @@
+// Case configuration and shared helpers for reading Worker settings.
+
+export function getCases(env) {
+  let raw = env.CASES;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((c) => c && typeof c.id === "string" && /^[\w.-]{1,64}$/.test(c.id) && typeof c.subject === "string")
+    .map((c) => ({
+      id: c.id,
+      title: typeof c.title === "string" ? c.title : c.id,
+      subject: c.subject.trim().toLowerCase(),
+      start: Date.parse(c.start), // NaN => case never active (fail safe)
+      end: Date.parse(c.end),
+      captureSent: c.captureSent !== false,
+    }));
+}
+
+export function findCase(env, caseId) {
+  return getCases(env).find((c) => c.id === caseId) || null;
+}
+
+export function isActive(c, now = Date.now()) {
+  return !!c && now >= c.start && now < c.end;
+}
+
+export function activeCaseFor(env, email, now = Date.now()) {
+  if (!email) return null;
+  const e = String(email).trim().toLowerCase();
+  return getCases(env).find((c) => c.subject === e && isActive(c, now)) || null;
+}
+
+export function maxBytes(env) {
+  const n = Number(env.MAX_CAPTURE_BYTES);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 2 * 1024 * 1024;
+}
+
+export function idleMs(env) {
+  const n = Number(env.SESSION_IDLE_MINUTES);
+  return (Number.isFinite(n) && n > 0 ? n : 30) * 60_000;
+}
+
+export function ledger(env, caseId) {
+  return env.LEDGER.get(env.LEDGER.idFromName(caseId));
+}

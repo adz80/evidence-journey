@@ -1,0 +1,71 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "evidence-capture",
+  "main": "src/index.js",
+  // Set this to the day you deploy.
+  "compatibility_date": "2026-11-18",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Never expose this Worker on workers.dev or preview URLs. Gateway invokes the
+  // GatewayMiddleware entrypoint directly; the evidence UI/API is only reachable on
+  // the custom domain below, which must sit behind a Cloudflare Access application.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "evidence.chewbacca.dev", "custom_domain": true }],
+
+  // Web front end (same UI as the gadget). run_worker_first makes every asset request
+  // pass the Access JWT check in src/api.js before anything is served.
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+
+  "r2_buckets": [{ "binding": "EVIDENCE", "bucket_name": "insider-evidence-poc" }],
+
+  "queues": {
+    "producers": [{ "binding": "CAPTURE_QUEUE", "queue": "evidence-capture" }],
+    "consumers": [
+      {
+        "queue": "evidence-capture",
+        "max_batch_size": 50,
+        "max_batch_timeout": 2,
+        "max_retries": 10,
+        "dead_letter_queue": "evidence-capture-dlq"
+      }
+    ]
+  },
+
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "CaseLedger" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CaseLedger"] }],
+
+  "browser": { "binding": "BROWSER" },
+
+  "observability": { "enabled": true },
+
+  "vars": {
+    // Your Zero Trust team domain and the AUD tag of the Access application that
+    // protects EVIDENCE_HOST. The API refuses every request until both are set.
+    "ACCESS_TEAM_DOMAIN": "https://hometesting8080.cloudflareaccess.com",
+    "ACCESS_AUD": "213080684c76bf274a8616eb3754456b3d59ec555e1555ff8e191de4a7659c16",
+
+    // Hostname of the evidence UI/API. Traffic to it is never captured.
+    "EVIDENCE_HOST": "evidence.chewbacca.dev",
+
+    // Per-response / per-request-body capture cap in bytes (2 MB).
+    "MAX_CAPTURE_BYTES": "2097152",
+
+    // Idle gap that splits browsing sessions in the journey view.
+    "SESSION_IDLE_MINUTES": "30",
+
+    // Cases. Capture only happens for the subject's identity email, and only
+    // between start and end (ISO 8601, UTC). PoC: the subject must be you or a
+    // test account. Changes are made by editing this list and redeploying.
+    "CASES": [
+      {
+        "id": "poc-001",
+        "title": "PoC self-test (test account)",
+        "subject": "headoffice@chewbacca.dev",
+        "start": "2026-11-18T00:00:00Z",
+        "end": "2026-12-18T00:00:00Z",
+        "captureSent": true
+      }
+    ]
+  }
+}
