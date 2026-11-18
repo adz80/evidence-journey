@@ -205,7 +205,7 @@ async function persist(env, plan, request, response, startedAt, sentPromise, bod
     }
     if (nav) {
       try {
-        title = extractTitle(await maybeDecompress(r.bytes), resType);
+        title = extractTitle(await maybeDecompress(r.bytes, response.headers.get("content-encoding")), resType);
       } catch {
         title = null;
       }
@@ -269,7 +269,7 @@ async function recordGap(env, plan, request, ts, reason) {
 
 async function enqueue(env, record) {
   if (JSON.stringify(record).length > MAX_MESSAGE_CHARS) {
-    const keep = ["content-type", "content-length", "content-disposition", "user-agent", "referer", "location"];
+    const keep = ["content-type", "content-encoding", "content-length", "content-disposition", "user-agent", "referer", "location"];
     for (const side of ["request", "response"]) {
       const h = record[side]?.headers;
       if (!h) continue;

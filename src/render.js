@@ -9,7 +9,11 @@
 
 import { Buffer } from "node:buffer";
 import { ledger } from "./config.js";
-import { HttpError, maybeDecompress, sha256Hex } from "./util.js";
+import { HttpError, decodeBody, sha256Hex } from "./util.js";
+
+// Bump when the renderer changes so earlier (possibly wrong) renders are not reused.
+// Old renders stay in storage and in the chain.
+const RENDER_VERSION = "v2";
 
 const VIEWPORT = { width: 1440, height: 900 };
 const MAX_HEIGHT = 6000;
@@ -41,7 +45,7 @@ export async function renderVisit(env, caseId, seq, actor) {
   if (!visit || visit.kind !== "capture" || !visit.data.nav) throw new HttpError(404, "Not a page visit");
   if (visit.data.download) throw new HttpError(409, "This visit was a file download; there is no page to reconstruct");
 
-  const key = `cases/${caseId}/renders/${seq}.jpg`;
+  const key = `cases/${caseId}/renders/${RENDER_VERSION}/${seq}.jpg`;
   const existing = await env.EVIDENCE.get(key);
   if (existing) {
     await lg.appendEvent(caseId, "access", { actor, action: "view-reconstruction", visitSeq: seq });
@@ -217,14 +221,20 @@ async function replay(env, visit, resources) {
   let lastActivity = Date.now();
   let inflight = 0;
 
+  // Returns { b64, encoding }. encoding is non-null when the body could not be
+  // decoded here; the Content-Encoding header is then passed to the browser.
   async function loadBody(r) {
-    if (!r.bodyKey) return "";
+    if (!r.bodyKey) return { b64: "", encoding: null };
     if (bodies.has(r.bodyKey)) return bodies.get(r.bodyKey);
     const obj = await env.EVIDENCE.get(r.bodyKey);
-    const bytes = obj ? await maybeDecompress(new Uint8Array(await obj.arrayBuffer())) : new Uint8Array(0);
-    const b64 = Buffer.from(bytes).toString("base64");
-    bodies.set(r.bodyKey, b64);
-    return b64;
+    let result = { b64: "", encoding: null };
+    if (obj) {
+      const raw = new Uint8Array(await obj.arrayBuffer());
+      const d = await decodeBody(raw, r.headers?.["content-encoding"]);
+      result = { b64: Buffer.from(d.bytes).toString("base64"), encoding: d.decoded ? null : d.encoding };
+    }
+    bodies.set(r.bodyKey, result);
+    return result;
   }
 
   // Guardrails with an empty allowlist block every real web request from this browser.
@@ -257,10 +267,12 @@ async function replay(env, visit, resources) {
         }
         if (m.approx || m.res.truncated || !m.res.bodyKey) counts.approximate++;
         else counts.replayed++;
-        const body = await loadBody(m.res);
+        const { b64, encoding } = await loadBody(m.res);
+        const responseHeaders = replayHeaders(m.res.headers);
+        if (encoding) responseHeaders.push({ name: "content-encoding", value: encoding });
         return await cdp.send(
           "Fetch.fulfillRequest",
-          { requestId, responseCode: m.res.status || 200, responseHeaders: replayHeaders(m.res.headers), body },
+          { requestId, responseCode: m.res.status || 200, responseHeaders, body: b64 },
           sid,
         );
       } catch {

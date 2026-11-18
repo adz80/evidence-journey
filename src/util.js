@@ -1,5 +1,7 @@
 // Hashing, canonical JSON, header/body redaction and small helpers.
 
+import * as zlib from "node:zlib";
+
 const encoder = new TextEncoder();
 
 export async function sha256Hex(bytes) {
@@ -179,18 +181,92 @@ export function extractTitle(bytes, contentType) {
   return t ? t.slice(0, 200) : null;
 }
 
-// Captured bodies may still be gzip-compressed depending on how the upstream
-// response was delivered. Detect by magic bytes rather than trusting headers.
-export async function maybeDecompress(bytes) {
-  if (bytes.byteLength > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+// Captured bodies are stored exactly as they came over the wire, which usually
+// means still compressed (gzip, br, zstd...). Evidence keeps the original bytes;
+// decoding only happens for display and replay.
+//
+// decodeBody(bytes, contentEncoding) -> { bytes, decoded, encoding }
+//   decoded=false means the original bytes are returned and `encoding` is the
+//   Content-Encoding that is still applied (so the replay browser can decode it).
+export async function decodeBody(bytes, contentEncoding) {
+  let encs = String(contentEncoding || "")
+    .toLowerCase()
+    .split(",")
+    .map((s) => s.trim())
+    .filter((e) => e && e !== "identity");
+  if (!encs.length) {
+    const sniffed = sniffEncoding(bytes);
+    if (!sniffed) return { bytes, decoded: true, encoding: null };
+    encs = [sniffed];
+  }
+  let out = bytes;
+  // Encodings are listed in the order they were applied: undo them in reverse.
+  for (const e of [...encs].reverse()) {
+    let d = null;
     try {
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      return new Uint8Array(await new Response(stream).arrayBuffer());
+      d = await decodeOne(out, e);
     } catch {
-      return bytes;
+      d = null;
+    }
+    if (!d) return { bytes, decoded: false, encoding: encs.join(", ") };
+    out = d;
+  }
+  return { bytes: out, decoded: true, encoding: null };
+}
+
+// Backwards-compatible helper: decoded bytes, or the originals if decoding fails.
+export async function maybeDecompress(bytes, contentEncoding) {
+  return (await decodeBody(bytes, contentEncoding)).bytes;
+}
+
+function sniffEncoding(b) {
+  if (b.byteLength > 2 && b[0] === 0x1f && b[1] === 0x8b) return "gzip";
+  if (b.byteLength > 4 && b[0] === 0x28 && b[1] === 0xb5 && b[2] === 0x2f && b[3] === 0xfd) return "zstd";
+  return null; // Brotli has no magic number; rely on the header.
+}
+
+async function decodeOne(bytes, enc) {
+  if (enc === "gzip" || enc === "x-gzip") return streamDecode(bytes, "gzip");
+  if (enc === "deflate") return (await streamDecode(bytes, "deflate")) || streamDecode(bytes, "deflate-raw");
+  if (enc === "br") {
+    try {
+      return new Uint8Array(zlib.brotliDecompressSync(bytes));
+    } catch {
+      return null;
     }
   }
-  return bytes;
+  if (enc === "zstd" && typeof zlib.zstdDecompressSync === "function") {
+    try {
+      return new Uint8Array(zlib.zstdDecompressSync(bytes));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Stream-decode; if the input was cut off (capture cap), keep what decoded.
+async function streamDecode(bytes, format) {
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format)).getReader();
+  const chunks = [];
+  let n = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      n += value.byteLength;
+    }
+  } catch {
+    if (!n) return null;
+  }
+  const out = new Uint8Array(n);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
 }
 
 export function isTextual(contentType) {
