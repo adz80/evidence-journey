@@ -58,7 +58,7 @@
     // Data location (see "placement" above). Informational except LEDGER_LOCATION_HINT.
     "PLACEMENT_REGION": "aws:ap-southeast-2",
     // Free text shown by GET /api/placement; change it to confirm a deploy went out.
-    "RELEASE": "2026-11-19 auto-deploy check",
+    "RELEASE": "2026-11-19 full Gateway context",
     "LEDGER_LOCATION_HINT": "oc",
     "EVIDENCE_BUCKET_NAME": "insider-evidence-poc (location OC)",
 
@@ -77,6 +77,8 @@
     "CORP_DOMAINS": ["chewbacca.dev"],
     // Optional: Gateway policy ID -> Cloudflare content category name, for per-category Forward rules.
     "CATEGORY_POLICIES": {},
+    // Names for the device posture check UUIDs Gateway reports as passed (context.devicePosture()).
+    "POSTURE_CHECKS": { "c1da6900-b91f-42c9-acbc-4db03fef54f6": "Windows_11 and Crowdstrike" },
     // Watch lists for search terms. Agree these with HR/Legal before any real case.
     // Leave a list out to use the built-in defaults.
     "WATCH_TERMS": {},

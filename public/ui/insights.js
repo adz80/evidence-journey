@@ -3,6 +3,7 @@
 // file only describes them and filters the list.
 
 export const SIGNALS = {
+  "security-threat": { label: "Security threat site", icon: "☠", tone: "bad", desc: "Cloudflare categorises this site as a security threat (phishing, malware, scam, command and control…)." },
   "exfil-chain": { label: "Download → upload", icon: "⇄", tone: "bad", desc: "A file was downloaded, then something was uploaded to a non-work site within the exfiltration window." },
   "personal-upload": { label: "Sent to personal service", icon: "⬆", tone: "bad", desc: "An upload or form went to personal cloud storage, webmail, messaging or a code/paste site." },
   evasion: { label: "Evasion / anonymiser", icon: "◌", tone: "bad", desc: "An anonymiser or VPN site, or searches about bypassing monitoring." },
@@ -10,6 +11,10 @@ export const SIGNALS = {
   "watch-term": { label: "Watch-list search", icon: "⌕", tone: "warn", desc: "A search matched a term on the case watch list." },
   "large-send": { label: "Large upload", icon: "▲", tone: "warn", desc: "A lot of data was sent from this page." },
   job: { label: "Job hunting", icon: "☍", tone: "warn", desc: "Job sites, careers pages, CV uploads or job-related searches." },
+  "remote-access": { label: "Remote access / P2P", icon: "⇆", tone: "warn", desc: "Cloudflare categorises this site as remote-access or peer-to-peer software, which can move data off the device." },
+  "posture-change": { label: "Device posture dropped", icon: "⛨", tone: "warn", desc: "The device stopped passing a posture check it passed earlier in the case (from Gateway's device posture)." },
+  "new-domain": { label: "New domain", icon: "✳", tone: "warn", desc: "Cloudflare marks this as a new or newly seen domain." },
+  "new-network": { label: "New network", icon: "⌖", tone: "info", desc: "First visit from this source IP or connection method in the case (from Gateway)." },
   upload: { label: "Upload", icon: "⬆", tone: "info", desc: "A file or large body was sent." },
   form: { label: "Form submitted", icon: "✎", tone: "info", desc: "A form was submitted." },
   download: { label: "File download", icon: "⬇", tone: "info", desc: "A file was downloaded." },
@@ -34,6 +39,10 @@ const CATEGORY_COLORS = {
   "Streaming & Entertainment": "#d946ef",
   "Business & Productivity": "#10b981",
   "Corporate (work)": "#059669",
+  "Security threats": "#991b1b",
+  "Remote Access": "#ea580c",
+  P2P: "#c2410c",
+  "New Domains": "#f97316",
   Uncategorised: "#94a3b8",
 };
 
@@ -65,6 +74,7 @@ export function haystack(v) {
     v.url,
     v.title,
     v.category,
+    ...(v.cfCategories || []),
     v.searchTerms,
     ...(v.fileNames || []),
     ...(v.signals || []).map((s) => `${SIGNALS[s.id]?.label || s.id} ${s.detail || ""}`),

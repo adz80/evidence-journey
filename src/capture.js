@@ -16,8 +16,10 @@ import {
   maybeDecompress,
   redactBody,
   sha256Hex,
+  stableStringify,
   uploadFileNames,
 } from "./util.js";
+import { identitySummary, plainIdentity, snapshotContext } from "./gatewayctx.js";
 
 const NO_BODY_STATUS = new Set([101, 204, 205, 304]);
 const MAX_MESSAGE_CHARS = 120_000; // Queue messages are limited to ~128 KB.
@@ -83,6 +85,14 @@ async function planCapture(request, context, env) {
   const url = new URL(request.url);
   if (env.EVIDENCE_HOST && url.hostname === env.EVIDENCE_HOST) return null;
 
+  // Identity decides whether this is the case subject. Device posture is fetched at the
+  // same time; a posture failure is recorded but never stops the capture.
+  const posturePromise = Promise.resolve()
+    .then(() => (typeof context.devicePosture === "function" ? context.devicePosture() : null))
+    .then(
+      (p) => ({ passed: p?.checks?.passed ? Array.from(p.checks.passed) : [] }),
+      (err) => ({ error: String(err).slice(0, 300) }),
+    );
   let identity = null;
   try {
     identity = await context.identity();
@@ -93,24 +103,45 @@ async function planCapture(request, context, env) {
   const c = activeCaseFor(env, identity?.email);
   if (!c) return null;
 
+  const gateway = snapshotContext(context);
+  const posture = await posturePromise;
+  gateway.devicePosture = posture.error ? { error: posture.error } : { passed: posture.passed };
+
   return {
     caseId: c.id,
     captureSent: c.captureSent,
     cap: maxBytes(env),
     captureId: crypto.randomUUID(),
-    subject: { email: identity.email, name: identity.name || null },
-    gateway: {
-      srcIp: context.srcIp,
-      internalSrcIp: context.internalSrcIp,
-      sni: context.sni,
-      host: context.host,
-      uri: context.uri,
-      dstIp: context.dstIp,
-      policyId: context.policyId,
-      onrampType: context.onrampType,
-    },
+    subject: identitySummary(identity),
+    identity: plainIdentity(identity),
+    gateway,
     gaps: [],
   };
+}
+
+// The full identity is kept once per distinct value (it rarely changes), and each
+// record points at it by SHA-256, so verify can check it.
+const storedIdentities = new Set();
+async function storeIdentity(env, plan, gaps) {
+  if (!plan.identity) return null;
+  const bytes = new TextEncoder().encode(stableStringify(plan.identity));
+  const sha256 = await sha256Hex(bytes);
+  const key = `cases/${plan.caseId}/identity/${sha256}.json`;
+  if (!storedIdentities.has(key)) {
+    try {
+      if (!(await env.EVIDENCE.head(key))) {
+        await env.EVIDENCE.put(key, bytes, {
+          httpMetadata: { contentType: "application/json" },
+          customMetadata: { sha256, caseId: plan.caseId },
+        });
+      }
+      storedIdentities.add(key);
+    } catch (err) {
+      gaps.push(`identity snapshot not stored: ${String(err)}`);
+      return { sha256, key: null };
+    }
+  }
+  return { sha256, key };
 }
 
 async function readCapped(stream, cap) {
@@ -173,6 +204,8 @@ async function persist(env, plan, request, response, startedAt, sentPromise, bod
   const resType = response.headers.get("content-type") || "";
   const disposition = response.headers.get("content-disposition") || "";
   const nav = isNavigation(request);
+  const identityRef = await storeIdentity(env, plan, gaps).catch(() => null);
+  const subject = plan.subject ? { ...plan.subject, identitySha256: identityRef?.sha256 || null, identityKey: identityRef?.key || null } : null;
 
   let sent = null;
   if (sentPromise) {
@@ -224,7 +257,7 @@ async function persist(env, plan, request, response, startedAt, sentPromise, bod
     captureId: plan.captureId,
     ts: startedAt,
     durationMs: Date.now() - startedAt,
-    subject: plan.subject,
+    subject,
     gateway: plan.gateway,
     nav: nav && !isRedirect,
     navRedirect: nav && isRedirect,
@@ -265,6 +298,7 @@ async function recordGap(env, plan, request, ts, reason) {
     captureId: `${plan.captureId}:gap`,
     ts,
     subject: plan.subject,
+    gateway: plan.gateway,
     request: { method: request.method, url: request.url },
     gaps: [reason],
   });

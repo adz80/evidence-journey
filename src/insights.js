@@ -6,16 +6,21 @@
 // findings: every one links back to the captured request it came from.
 //
 // Category sources, most trusted first:
-//   1. "gateway"  - CATEGORY_POLICIES maps a Gateway policy ID to a category name.
-//                   Use it with one Forward rule per Cloudflare content category, so
-//                   Cloudflare's own categorisation is recorded with each capture.
-//   2. "corporate"- CORP_DOMAINS (the organisation's own domains).
-//   3. "built-in" - the domain list below (most specific match wins).
+//   1. "gateway"   - CATEGORY_POLICIES maps a Gateway policy ID to a category name.
+//   2. "corporate" - CORP_DOMAINS (the organisation's own domains).
+//   3. "gateway-category" - Cloudflare's own domain categories, which Gateway sends with
+//                    every forwarded request (context.domainCategories). Security threats
+//                    always win; a path-specific built-in entry (linkedin.com/jobs) beats
+//                    the rest.
+//   4. "built-in"  - the domain list below (most specific match wins).
 //
 // Tunables (all optional wrangler vars):
-//   WORK_HOURS "08:00-18:00", WORK_DAYS "1-5" (Mon=1 … Sun=7), WORK_TZ "Europe/London"
+//   WORK_HOURS "08:00-18:00", WORK_DAYS "1-5" (Mon=1 … Sun=7), WORK_TZ "Australia/Sydney"
+//   POSTURE_CHECKS {"<uuid>": "name"}  (names for device posture checks)
 //   WATCH_TERMS {"evasion":[…],"watch":[…],"job":[…]}   AI_SHARE_BYTES "2000"
 //   EXFIL_WINDOW_MINUTES "30"   LARGE_SEND_BYTES "5242880"
+
+import { NEW_DOMAIN_IDS, REMOTE_ACCESS_IDS, THREAT_IDS, cfCategoryLabel, cfCategoryNames, journeyCategoryFromCf } from "./gatewayctx.js";
 
 export const CATEGORY_RULES = {
   "Artificial Intelligence": [
@@ -82,7 +87,7 @@ export const CATEGORY_RULES = {
 };
 
 export const UNCATEGORISED = "Uncategorised";
-const PERSONAL_DEST = new Set(["Cloud Storage & File Sharing", "Personal Email", "Messaging & Chat", "Code & Paste Sites"]);
+const PERSONAL_DEST = new Set(["Cloud Storage & File Sharing", "Personal Email", "Messaging & Chat", "Code & Paste Sites", "P2P"]);
 
 const DEFAULT_TERMS = {
   evasion: [
@@ -102,6 +107,11 @@ const DEFAULT_TERMS = {
 // Signal weights for the per-visit risk score. high >= 6, medium >= 3, low > 0.
 export const SIGNAL_WEIGHTS = {
   "exfil-chain": 5,
+  "security-threat": 5,
+  "remote-access": 3,
+  "posture-change": 2,
+  "new-domain": 2,
+  "new-network": 1,
   "personal-upload": 4,
   evasion: 4,
   "ai-share": 3,
@@ -154,6 +164,7 @@ export function insightConfig(env) {
     },
     corp: lower(parseJson(env.CORP_DOMAINS, []), []),
     policies: parseJson(env.CATEGORY_POLICIES, {}),
+    postureNames: parseJson(env.POSTURE_CHECKS, {}),
     aiShareBytes: Number(env.AI_SHARE_BYTES) || 2000,
     exfilMs: (Number(env.EXFIL_WINDOW_MINUTES) || 30) * 60_000,
     largeSendBytes: Number(env.LARGE_SEND_BYTES) || 5 * 1024 * 1024,
@@ -166,7 +177,7 @@ function hostMatches(host, entry) {
   return host === entry || host.endsWith("." + entry);
 }
 
-export function categorize(url, policyId, cfg) {
+export function categorize(url, policyId, cfg, cfIds = null) {
   if (policyId && cfg.policies && cfg.policies[policyId]) return { name: cfg.policies[policyId], source: "gateway" };
   let u;
   try {
@@ -176,6 +187,17 @@ export function categorize(url, policyId, cfg) {
   }
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (cfg.corp.some((d) => hostMatches(host, d))) return { name: "Corporate (work)", source: "corporate" };
+  const cf = journeyCategoryFromCf(cfIds);
+  if (cf && cf.name === "Security threats") return { name: cf.name, source: "gateway-category" };
+  const built = builtInCategory(u, host);
+  if (built && built.len >= 100) return { name: built.name, source: "built-in" };
+  if (cf && cf.mapped) return { name: cf.name, source: "gateway-category" };
+  if (built) return { name: built.name, source: "built-in" };
+  if (cf) return { name: cf.name, source: "gateway-category" };
+  return { name: UNCATEGORISED, source: "none" };
+}
+
+function builtInCategory(u, host) {
   const hostPath = host.replace(/^www\./, "") + u.pathname.toLowerCase();
   let best = null;
   let bestLen = -1;
@@ -198,7 +220,7 @@ export function categorize(url, policyId, cfg) {
       }
     }
   }
-  return best ? { name: best, source: "built-in" } : { name: UNCATEGORISED, source: "none" };
+  return best ? { name: best, len: bestLen } : null;
 }
 
 // ---- search terms and file names -------------------------------------------------
@@ -272,10 +294,18 @@ export function annotateJourney(journey, env) {
   visits.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
 
   const recentDownloads = []; // {ts, seq, name}
+  // Gateway context seen so far in the case, for "first time" signals.
+  const postureEver = new Set();
+  const networks = new Map(); // "srcIp|onramp" -> {srcIp, onramp, proxyEndpoint, first, last, visits, firstSeq}
+  const cfCounts = new Map();
+  let postureErrors = 0;
   for (const v of visits) {
-    const cat = categorize(v.url, v.policyId, cfg);
+    const gw = v.gw || {};
+    const cat = categorize(v.url, v.policyId, cfg, gw.cats);
     v.category = cat.name;
     v.categorySource = cat.source;
+    v.cfCategories = cfCategoryNames(gw.cats);
+    for (const n of v.cfCategories) cfCounts.set(n, (cfCounts.get(n) || 0) + 1);
     v.searchTerms = searchTerms(v.url);
     const lp = localParts(v.ts, cfg.tz);
     v.local = { hour: lp.hour, dow: lp.dow, afterHours: isAfterHours(lp, cfg) };
@@ -332,6 +362,33 @@ export function annotateJourney(journey, env) {
     else if (/\/(careers?|jobs?|vacanc(y|ies)|apply)(\/|$)/i.test(safePath(v.url))) add("job", "Careers / jobs page");
     else if (jobTerms.length) add("job", `Searched: “${jobTerms.join("”, “")}”`);
 
+    // ---- signals from Gateway's own metadata ----
+    const ids = new Set((gw.cats || []).map(Number));
+    const threats = [...ids].filter((x) => THREAT_IDS.has(x));
+    if (threats.length) add("security-threat", `Cloudflare categorises this site as ${threats.map((x) => cfCategoryLabel(x).split(" › ").pop()).join(", ")}`);
+    if ([...ids].some((x) => NEW_DOMAIN_IDS.has(x))) add("new-domain", "Cloudflare marks this as a new or newly seen domain");
+    const ra = [...ids].filter((x) => REMOTE_ACCESS_IDS.has(x));
+    if (ra.length) add("remote-access", `${ra.map((x) => cfCategoryLabel(x).split(" › ").pop()).join(", ")} site`);
+
+    if (Array.isArray(gw.posture)) {
+      const now = new Set(gw.posture);
+      const lost = [...postureEver].filter((x) => !now.has(x));
+      if (lost.length) add("posture-change", `Device no longer passing ${lost.map((x) => `“${cfg.postureNames[x] || x}”`).join(", ")}`);
+      for (const x of now) postureEver.add(x);
+    } else if (gw.postureError) postureErrors++;
+
+    if (gw.srcIp) {
+      const key = `${gw.srcIp}|${gw.onramp || ""}`;
+      let n = networks.get(key);
+      if (!n) {
+        n = { srcIp: gw.srcIp, onramp: gw.onramp || null, proxyEndpoint: gw.proxyEndpoint || null, first: v.ts, last: v.ts, visits: 0, firstSeq: v.seq };
+        if (networks.size) add("new-network", `First visit from ${gw.srcIp}${gw.onramp ? ` via ${gw.onramp}` : ""}`);
+        networks.set(key, n);
+      }
+      n.last = v.ts;
+      n.visits++;
+    }
+
     if (v.local.afterHours && (signals.length || v.sends.length)) add("after-hours", `Outside working hours (${cfg.workHours}, ${cfg.tz})`);
     else if (v.local.afterHours) v.afterHoursOnly = true;
 
@@ -347,8 +404,15 @@ export function annotateJourney(journey, env) {
     tz: cfg.tz,
     workHours: cfg.workHours,
     workDays: cfg.workDays,
-    categorySources: Object.keys(cfg.policies || {}).length ? "gateway + built-in" : "built-in",
+    categorySources: Object.keys(cfg.policies || {}).length ? "gateway policies + Cloudflare categories + built-in" : "Cloudflare categories + built-in",
     weights: SIGNAL_WEIGHTS,
+    gateway: {
+      networks: [...networks.values()].sort((a, b) => a.first - b.first).slice(0, 50),
+      postureNames: cfg.postureNames,
+      posturePassedEver: [...postureEver],
+      postureErrors,
+      cfCategories: [...cfCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15),
+    },
   };
 }
 

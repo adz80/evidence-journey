@@ -359,11 +359,27 @@ export async function mountApp(root, api, opts = {}) {
       t.sends ? el("span", { class: "ej-pill bad" }, plural(t.sends, "upload/form", "uploads/forms")) : null,
       t.downloads ? el("span", { class: "ej-pill brand" }, plural(t.downloads, "download")) : null,
       t.gaps ? el("span", { class: "ej-pill warn" }, plural(t.gaps, "gap")) : null,
+      ...gatewayPills(j.insights?.gateway),
       el("span", { class: "ej-pill", title: j.head?.hash || "" }, `Chain #${j.head?.seq || 0} · ${shortHash(j.head?.hash)}`),
       el("div", { class: "ej-spacer" }),
       sort,
     );
     if (!s.reset?.open) renderTools(); // don't wipe the confirm box while it's being typed in
+  }
+
+  // Case-wide view of Gateway's context: where the subject connected from, device posture.
+  function gatewayPills(g) {
+    if (!g) return [];
+    const out = [];
+    const nets = g.networks || [];
+    if (nets.length) {
+      const list = nets.map((n) => `${n.srcIp}${n.onramp ? ` via ${n.onramp}` : ""} · ${n.visits} visits · ${fmtDateTime(n.first)} → ${fmtDateTime(n.last)}`).join("\n");
+      out.push(el("span", { class: `ej-pill${nets.length > 1 ? " warn" : ""}`, title: `Source IPs seen by Gateway:\n${list}` }, plural(nets.length, "network")));
+    }
+    const ever = g.posturePassedEver || [];
+    if (ever.length) out.push(el("span", { class: "ej-pill", title: "Device posture checks the device passed at some point in the case" }, `Posture: ${ever.map((x) => g.postureNames?.[x] || x.slice(0, 8)).join(", ")}`));
+    if (g.postureErrors) out.push(el("span", { class: "ej-pill warn", title: "Gateway could not return device posture for these visits" }, `${g.postureErrors} posture unknown`));
+    return out;
   }
 
   // ---- tools: save all reconstructions, clear PoC data -------------------------
@@ -737,20 +753,54 @@ export async function mountApp(root, api, opts = {}) {
           ]),
         ),
       ),
-      section(
-        "Who and where (from Gateway)",
-        el(
-          "div",
-          { class: "ej-card" },
-          kv([
-            ["Subject", d.subject ? `${d.subject.name ? d.subject.name + " · " : ""}${d.subject.email}` : "—"],
-            ["Source IP", d.gateway?.srcIp || "—"],
-            ["Internal IP", d.gateway?.internalSrcIp || "—"],
-            ["On-ramp", d.gateway?.onrampType || "—"],
-            ["Destination IP", d.gateway?.dstIp || "—"],
-            ["Gateway policy", mono(d.gateway?.policyId)],
-          ]),
-        ),
+      renderGatewayContext(d, s.visitIndex.get(r.seq)),
+    );
+  }
+
+  // Everything Gateway's Forward action sent with this request.
+  function renderGatewayContext(d, v) {
+    const g = d.gateway || {};
+    const sub = d.subject || {};
+    const names = s.journey?.insights?.gateway?.postureNames || {};
+    const p = g.devicePosture;
+    const posture = !p
+      ? "— (not recorded for older captures)"
+      : p.error
+        ? `Could not be read: ${p.error}`
+        : p.passed.length
+          ? p.passed.map((x) => names[x] || x).join(", ")
+          : "No checks passed (or no registered device)";
+    const port = (ip, pt) => (ip ? `${ip}${pt != null ? ` : ${pt}` : ""}` : "—");
+    const known = new Set(["srcIp", "srcPort", "dstIp", "dstPort", "networkProtocol", "sni", "onrampType", "vnetId", "proxyEndpoint", "internalSrcIp", "accountId", "policyId", "host", "uri", "embeddedProtocols", "domainCategories", "devicePosture"]);
+    const extra = Object.entries(g).filter(([k]) => !known.has(k));
+    return section(
+      "Who and where (from Gateway)",
+      el(
+        "div",
+        { class: "ej-card" },
+        el("div", { class: "ej-hint" }, "Sent by Cloudflare Gateway with the request (Forward action context). Gateway does not send DLP match details, failed posture checks or a device ID."),
+        kv([
+          ["Subject", sub.email ? `${sub.name ? sub.name + " · " : ""}${sub.email}` : "—"],
+          ["Groups", sub.groups?.length ? `${sub.groups.join(", ")}${sub.groupCount > sub.groups.length ? ` (+${sub.groupCount - sub.groups.length} more)` : ""}` : "—"],
+          ["SAML attributes / OIDC claims", sub.email ? `${sub.samlAttributeCount ?? 0} / ${sub.oidcClaimCount ?? 0} (full copy kept as evidence)` : "—"],
+          ["Identity snapshot SHA-256", mono(sub.identitySha256)],
+          ["Device posture passed", posture],
+          ["Cloudflare categories", v?.cfCategories?.length ? v.cfCategories.join(", ") : g.domainCategories?.length ? g.domainCategories.join(", ") : "—"],
+          ["Embedded protocols", g.embeddedProtocols?.length ? g.embeddedProtocols.join(", ") : "—"],
+          ["Source", port(g.srcIp, g.srcPort)],
+          ["Internal source IP", g.internalSrcIp || "—"],
+          ["On-ramp", g.onrampType || "—"],
+          ["Proxy endpoint", g.proxyEndpoint || "—"],
+          ["Virtual network", g.vnetId || "—"],
+          ["Destination", port(g.dstIp, g.dstPort)],
+          ["Protocol", g.networkProtocol || "—"],
+          ["SNI", g.sni || "—"],
+          ["Host", g.host || "—"],
+          ["Normalised URL", g.uri || "—"],
+          ["Forward policy", mono(g.policyId)],
+          ["Account", mono(g.accountId)],
+          ...extra.map(([k, val]) => [k, typeof val === "object" ? JSON.stringify(val) : String(val)]),
+        ]),
       ),
     );
   }
@@ -759,7 +809,7 @@ export async function mountApp(root, api, opts = {}) {
     if (!v) return null;
     const ins = s.journey?.insights || {};
     const sigs = [...v.signals].sort((a, b) => SIGNAL_ORDER.indexOf(a.id) - SIGNAL_ORDER.indexOf(b.id));
-    const src = { gateway: "Cloudflare Gateway", corporate: "your corporate domains", "built-in": "built-in list", none: "no match" }[v.categorySource] || v.categorySource || "built-in list";
+    const src = { gateway: "a Gateway policy", "gateway-category": `Cloudflare Gateway (${(v.cfCategories || []).join(", ") || "domain categories"})`, corporate: "your corporate domains", "built-in": "built-in list", none: "no match" }[v.categorySource] || v.categorySource || "built-in list";
     const linked = v.chainFromSeq ? s.visitIndex.get(v.chainFromSeq) : null;
     return section(
       v.signals.length ? "Why this was flagged" : "Behaviour",
@@ -771,7 +821,11 @@ export async function mountApp(root, api, opts = {}) {
           { class: "ej-flags-h" },
           v.risk ? el("span", { class: `ej-risk ${v.riskLevel}` }, `${v.riskLevel} risk · score ${v.risk}`) : el("span", { class: "ej-risk none" }, "No behaviours flagged"),
           el("span", { class: "ej-chip cat", style: `--c:${categoryColor(v.category)}` }, v.category),
-          el("span", { class: "ej-hint" }, `Category from ${src}`),
+          el(
+            "span",
+            { class: "ej-hint" },
+            `Category from ${src}${v.categorySource !== "gateway-category" && v.cfCategories?.length ? ` · Cloudflare says: ${v.cfCategories.join(", ")}` : ""}`,
+          ),
           el(
             "button",
             {

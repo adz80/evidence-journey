@@ -211,6 +211,7 @@ export class CaseLedger extends DurableObject {
           gaps: (d.gaps || []).length,
           rendered: rendered.has(row.seq),
           policyId: d.gateway?.policyId || null,
+          gw: gatewaySummary(d),
           disposition: d.response?.disposition || null,
           sentBytes: 0,
           maxSendBytes: 0,
@@ -358,6 +359,7 @@ export class CaseLedger extends DurableObject {
     const rows = this.sql.exec("SELECT * FROM records WHERE seq >= ? ORDER BY seq LIMIT ?", fromSeq, limit).toArray();
     let expected = fromSeq;
     let checked = 0;
+    const checkedShared = new Set();
     for (const r of rows) {
       if (r.seq !== expected) {
         return fail(head, checked, expected, `record #${expected} is missing (next present record is #${r.seq})`);
@@ -373,6 +375,9 @@ export class CaseLedger extends DurableObject {
       if (h !== r.hash) return fail(head, checked, r.seq, "record contents do not match its hash (altered)");
 
       for (const ref of objectRefs(r.kind, data)) {
+        // Shared objects (identity snapshots) are referenced by many records; check each once.
+        if (ref.shared && checkedShared.has(ref.key + ref.sha256)) continue;
+        if (ref.shared) checkedShared.add(ref.key + ref.sha256);
         const obj = await this.env.EVIDENCE.get(ref.key);
         if (!obj) return fail(head, checked, r.seq, `${ref.label} is missing from storage (${ref.key})`);
         const sha = await sha256Hex(await obj.arrayBuffer());
@@ -398,10 +403,28 @@ function objectRefs(kind, data) {
     const s = data.response?.body;
     if (q?.key) refs.push({ key: q.key, sha256: q.sha256, label: "request body" });
     if (s?.key) refs.push({ key: s.key, sha256: s.sha256, label: "response body" });
+    const idKey = data.subject?.identityKey;
+    if (idKey && data.subject?.identitySha256) refs.push({ key: idKey, sha256: data.subject.identitySha256, label: "identity snapshot", shared: true });
   } else if (kind === "reconstruction" && data.key) {
     refs.push({ key: data.key, sha256: data.sha256, label: "reconstruction JPEG" });
   }
   return refs;
+}
+
+// The Gateway context the detectors use (the full copy stays in the record).
+function gatewaySummary(d) {
+  const g = d.gateway || {};
+  const p = g.devicePosture;
+  return {
+    cats: Array.isArray(g.domainCategories) ? g.domainCategories : [],
+    protocols: Array.isArray(g.embeddedProtocols) ? g.embeddedProtocols : [],
+    srcIp: g.srcIp || null,
+    onramp: g.onrampType || null,
+    proxyEndpoint: g.proxyEndpoint || null,
+    vnetId: g.vnetId || null,
+    posture: p && Array.isArray(p.passed) ? p.passed : null,
+    postureError: p?.error || null,
+  };
 }
 
 function sendSummary(row, d) {

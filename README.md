@@ -10,6 +10,7 @@ this at a real employee without a case, an approver, and Legal/HR sign-off.
 
 | Path | Role |
 |---|---|
+| `src/gatewayctx.js` | Everything Gateway's Forward action sends (all `context` fields, `identity()` incl. groups/SAML/OIDC, `devicePosture()`), plus this account's Cloudflare category ID → name table and how those categories map onto journey categories. The full identity is stored once per distinct value in R2 (`cases/<id>/identity/<sha>.json`) and checked by verify. |
 | `src/capture.js` | `GatewayMiddleware` (Forward action). Tees request and response bodies, caps them at `MAX_CAPTURE_BYTES`, hides secrets in the stored copy, writes bodies to R2, sends a summary to the Queue. Never blocks or breaks the user's page. |
 | `src/queue.js` | Queue consumer. Appends summaries to the case ledger (at-least-once, de-duplicated). |
 | `src/ledger.js` | `CaseLedger` Durable Object, one per case. Orders records and hash-chains them. Builds the journey (sessions, visits, sends, gaps) and verifies the chain against R2. |
