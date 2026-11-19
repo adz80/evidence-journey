@@ -70,7 +70,7 @@ export async function mountApp(root, api, opts = {}) {
   const top = el(
     "div",
     { class: "ej-top" },
-    el("div", { class: "ej-brand" }, el("span", { class: "ej-dot" }), "Insider Risk Incident Response"),
+    el("div", { class: "ej-brand" }, el("span", { class: "ej-dot" }), "Insider Threat Incident Response"),
     caseSelect,
     search,
     verifyPill,
