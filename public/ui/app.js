@@ -502,8 +502,18 @@ export async function mountApp(root, api, opts = {}) {
     s.reset.error = null;
     renderTools();
     try {
-      const out = await api.resetCase(caseId, caseId);
-      s.reset = { result: `Cleared ${plural(out.deletedRecords ?? 0, "record")} and ${plural(out.deletedObjects ?? 0, "stored file")}` };
+      // Large cases are cleared in batches: the server returns done:false until all files are gone.
+      let out;
+      let files = 0;
+      for (let round = 0; round < 200; round++) {
+        out = await api.resetCase(caseId, caseId);
+        files += out.deletedObjects ?? 0;
+        if (out.done !== false) break;
+        s.reset.progress = files;
+        renderTools();
+      }
+      if (out?.done === false) throw new Error(`stopped after deleting ${files} files; try again`);
+      s.reset = { result: `Cleared ${plural(out.deletedRecords ?? 0, "record")} and ${plural(files, "stored file")}` };
       s.bulk = null;
       s.verify = null;
       s.selectedSeq = null;

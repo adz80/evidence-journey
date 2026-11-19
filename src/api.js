@@ -154,7 +154,10 @@ async function resetCase(request, url, env, actor) {
   }
   if (body?.confirm !== caseId) throw new HttpError(400, `To clear this case, send {"confirm": "${caseId}"}`);
   const at = Date.now();
-  const deletedObjects = await deletePrefix(env, `cases/${caseId}/`, at);
+  // Delete stored files in batches for up to ~20 s. If any remain, say so; the
+  // caller repeats until done, and only then is the ledger cleared.
+  const { deleted: deletedObjects, done } = await deletePrefix(env, `cases/${caseId}/`, at, at + 20_000);
+  if (!done) return json({ ok: true, done: false, deletedObjects }, 202);
   const r = await ledger(env, caseId).reset(caseId, { actor, at, deletedObjects });
   const purgedLedgers = {};
   for (const name of c.retiredLedgers) {
@@ -162,23 +165,27 @@ async function resetCase(request, url, env, actor) {
     purgedLedgers[name] = await ledgerByName(env, name).purge().then(() => "wiped", (e) => "error: " + e.message);
   }
   console.log(`case ${caseId} cleared by ${actor.type}:${actor.id}: ${r.deletedRecords} records, ${deletedObjects} objects`);
-  return json({ ok: true, deletedRecords: r.deletedRecords, deletedObjects, purgedLedgers, at: new Date(at).toISOString() });
+  return json({ ok: true, done: true, deletedRecords: r.deletedRecords, deletedObjects, purgedLedgers, at: new Date(at).toISOString() });
 }
 
-// Deletes objects under prefix uploaded before `before` (later uploads belong to new captures).
-async function deletePrefix(env, prefix, before) {
+// Deletes objects under prefix uploaded before `before` (later uploads belong to new
+// captures), stopping at `deadline`. Returns { deleted, done }.
+async function deletePrefix(env, prefix, before, deadline) {
   let cursor;
   let n = 0;
   do {
+    if (Date.now() > deadline) return { deleted: n, done: false };
     const page = await env.EVIDENCE.list({ prefix, cursor, limit: 1000 });
     const keys = page.objects.filter((o) => o.uploaded.getTime() < before).map((o) => o.key);
-    if (keys.length) {
-      await env.EVIDENCE.delete(keys);
-      n += keys.length;
+    for (let i = 0; i < keys.length; i += 100) {
+      if (Date.now() > deadline) return { deleted: n, done: false };
+      const batch = keys.slice(i, i + 100);
+      await env.EVIDENCE.delete(batch);
+      n += batch.length;
     }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
-  return n;
+  return { deleted: n, done: true };
 }
 
 async function preview(env, body) {
