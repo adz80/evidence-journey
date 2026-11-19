@@ -20,6 +20,11 @@ export function getCases(env) {
       end: Date.parse(c.end),
       captureSent: c.captureSent !== false,
       allowReset: c.allowReset === true,
+      // Durable Object name of the case ledger. A new name gives a fresh ledger,
+      // created where LEDGER_LOCATION_HINT says (a ledger can't move once created).
+      ledgerName: typeof c.ledgerName === "string" && c.ledgerName ? c.ledgerName : c.id,
+      // Old ledgers of this case, wiped completely by the PoC reset.
+      retiredLedgers: Array.isArray(c.retiredLedgers) ? c.retiredLedgers.filter((n) => typeof n === "string" && n) : [],
     }));
 }
 
@@ -51,8 +56,12 @@ export function idleMs(env) {
 // It only applies the first time a case's Durable Object is created; an existing
 // one stays where it is.
 export function ledger(env, caseId) {
+  return ledgerByName(env, findCase(env, caseId)?.ledgerName || caseId);
+}
+
+export function ledgerByName(env, name) {
   const hint = env.LEDGER_LOCATION_HINT || undefined;
-  return env.LEDGER.get(env.LEDGER.idFromName(caseId), hint ? { locationHint: hint } : undefined);
+  return env.LEDGER.get(env.LEDGER.idFromName(name), hint ? { locationHint: hint } : undefined);
 }
 
 // Cloudflare data centre code (e.g. "SYD") of whoever runs this code.

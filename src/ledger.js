@@ -333,6 +333,12 @@ export class CaseLedger extends DurableObject {
     return { colo: await currentColo() };
   }
 
+  // PoC only, for a retired ledger: wipe everything this object stores.
+  async purge() {
+    await this.ctx.storage.deleteAll();
+    return { ok: true };
+  }
+
   // ---- verification ---------------------------------------------------------
 
   // Verifies records [fromSeq, fromSeq+limit). Call repeatedly with nextSeq.

@@ -70,7 +70,7 @@
     // Working hours in WORK_TZ; anything outside (or on days outside WORK_DAYS, Mon=1) is "after hours".
     "WORK_HOURS": "08:00-18:00",
     "WORK_DAYS": "1-5",
-    "WORK_TZ": "Europe/London",
+    "WORK_TZ": "Australia/Sydney",
     // The organisation's own domains: categorised "Corporate (work)" and never treated as personal.
     "CORP_DOMAINS": ["chewbacca.dev"],
     // Optional: Gateway policy ID -> Cloudflare content category name, for per-category Forward rules.
@@ -92,7 +92,11 @@
         "captureSent": true,
         // PoC only: lets an investigator clear all of this case's data from the UI.
         // Never set this on a real case.
-        "allowReset": true
+        "allowReset": true,
+        // Ledger created in Oceania. "poc-001" was the first ledger (created in the US);
+        // the PoC reset wipes it.
+        "ledgerName": "poc-001-au",
+        "retiredLedgers": ["poc-001"]
       }
     ]
   }

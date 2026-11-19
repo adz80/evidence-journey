@@ -135,7 +135,7 @@ export function insightConfig(env) {
   const [d1, d2] = String(env.WORK_DAYS || "1-5").split("-").map(Number);
   const terms = parseJson(env.WATCH_TERMS, {});
   const lower = (a, d) => (Array.isArray(a) ? a : d).map((x) => String(x).toLowerCase()).filter(Boolean);
-  let tz = env.WORK_TZ || "Europe/London";
+  let tz = env.WORK_TZ || "Australia/Sydney";
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: tz });
   } catch {

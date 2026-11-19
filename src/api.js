@@ -3,7 +3,7 @@
 // access (audit) records, plus one PoC-only exception: POST .../reset clears a
 // case whose config has allowReset: true (never set on a real case).
 
-import { currentColo, findCase, getCases, isActive, ledger } from "./config.js";
+import { currentColo, findCase, getCases, isActive, ledger, ledgerByName } from "./config.js";
 import { verifyAccess } from "./access.js";
 import { renderVisit } from "./render.js";
 import { serveAsset } from "./assets.js";
@@ -45,7 +45,10 @@ async function route(url, env, actor) {
   if (parts.length === 2 && parts[1] === "placement") {
     const ledgers = {};
     for (const c of getCases(env)) {
-      ledgers[c.id] = await ledger(env, c.id).where().then((w) => w.colo, (e) => "error: " + e.message);
+      ledgers[c.id] = {
+        name: c.ledgerName,
+        colo: await ledger(env, c.id).where().then((w) => w.colo, (e) => "error: " + e.message),
+      };
     }
     return json({
       workerColo: await currentColo(),
@@ -153,8 +156,13 @@ async function resetCase(request, url, env, actor) {
   const at = Date.now();
   const deletedObjects = await deletePrefix(env, `cases/${caseId}/`, at);
   const r = await ledger(env, caseId).reset(caseId, { actor, at, deletedObjects });
+  const purgedLedgers = {};
+  for (const name of c.retiredLedgers) {
+    if (name === c.ledgerName) continue;
+    purgedLedgers[name] = await ledgerByName(env, name).purge().then(() => "wiped", (e) => "error: " + e.message);
+  }
   console.log(`case ${caseId} cleared by ${actor.type}:${actor.id}: ${r.deletedRecords} records, ${deletedObjects} objects`);
-  return json({ ok: true, deletedRecords: r.deletedRecords, deletedObjects, at: new Date(at).toISOString() });
+  return json({ ok: true, deletedRecords: r.deletedRecords, deletedObjects, purgedLedgers, at: new Date(at).toISOString() });
 }
 
 // Deletes objects under prefix uploaded before `before` (later uploads belong to new captures).
