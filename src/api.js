@@ -51,6 +51,7 @@ async function route(url, env, actor) {
       };
     }
     return json({
+      release: env.RELEASE || null,
       workerColo: await currentColo(),
       placementRegion: env.PLACEMENT_REGION || null,
       ledgerLocationHint: env.LEDGER_LOCATION_HINT || null,

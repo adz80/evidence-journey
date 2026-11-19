@@ -57,6 +57,8 @@
 
     // Data location (see "placement" above). Informational except LEDGER_LOCATION_HINT.
     "PLACEMENT_REGION": "aws:ap-southeast-2",
+    // Free text shown by GET /api/placement; change it to confirm a deploy went out.
+    "RELEASE": "2026-11-19 auto-deploy check",
     "LEDGER_LOCATION_HINT": "oc",
     "EVIDENCE_BUCKET_NAME": "insider-evidence-poc (location OC)",
 
