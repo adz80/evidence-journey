@@ -18,6 +18,7 @@ import { injectStyles } from "./styles.js";
 import { el, fmtBytes, fmtDateTime, fmtDay, fmtTime, fmtUtc, hostOf, pathOf, plural, shortHash } from "./dom.js";
 import { SIGNALS, SIGNAL_ORDER, activeFilterCount, categoryColor, matches, newFilters } from "./insights.js";
 import { renderChart, renderRail } from "./filters.js";
+import { renderHero } from "./hero.js";
 
 const POLL_MS = 10_000;
 
@@ -60,17 +61,25 @@ export async function mountApp(root, api, opts = {}) {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         s.f.q = e.target.value.trim().toLowerCase();
-        renderAll();
+        renderAll(true);
       }, 150);
     },
   });
-  const verifyBtn = el("button", { class: "ej-btn", onclick: () => runVerify() }, "Verify chain");
+  const verifyBtn = el("button", { class: "ej-btn primary", onclick: () => runVerify() }, "⛓ Verify chain");
   const verifyPill = el("span", { class: "ej-pill" }, "Chain not checked");
-  const whoPill = el("span", { class: "ej-pill" }, "…");
+  const whoPill = el("span", { class: "ej-pill ej-who" }, "…");
+  const logo = el("span", { class: "ej-logo", "aria-hidden": "true" });
+  logo.innerHTML =
+    '<svg viewBox="0 0 32 32"><defs><linearGradient id="ejlg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6821f"/><stop offset=".55" stop-color="#ff3d7f"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs><path d="M16 2 4 6.5v8.2c0 7.3 5 12.9 12 15.3 7-2.4 12-8 12-15.3V6.5L16 2Z" fill="url(#ejlg)"/><circle cx="16" cy="15" r="5.2" fill="none" stroke="#fff" stroke-width="2"/><circle cx="16" cy="15" r="1.8" fill="#fff"/></svg>';
   const top = el(
     "div",
     { class: "ej-top" },
-    el("div", { class: "ej-brand" }, el("span", { class: "ej-dot" }), "Insider Threat Incident Response"),
+    el(
+      "div",
+      { class: "ej-brand" },
+      logo,
+      el("span", { class: "ej-brand-t" }, el("span", { class: "ej-brand-n" }, "Insider Threat Incident Response"), el("span", { class: "ej-brand-s" }, el("span", { class: "ej-live" }), "Live evidence console")),
+    ),
     caseSelect,
     search,
     verifyPill,
@@ -78,6 +87,8 @@ export async function mountApp(root, api, opts = {}) {
     whoPill,
   );
   const banner = el("div", { class: "ej-banner" });
+  const hero = el("section", { class: "ej-hero", "aria-label": "Case overview" });
+  let heroKey = null;
   const rail = el("aside", { class: "ej-rail", "aria-label": "Filters" });
   const summary = el("div", { class: "ej-summary" });
   const chart = el("div", { class: "ej-chartwrap" });
@@ -87,8 +98,14 @@ export async function mountApp(root, api, opts = {}) {
   const side = el("div", { class: "ej-side" }, rail, listWrap);
   const detail = el("div", { class: "ej-detail" });
   const main = el("div", { class: "ej-main" }, side, detail);
-  const shell = el("div", { class: "ej-shell" }, top, banner, main);
+  const shell = el("div", { class: "ej-shell" }, top, banner, hero, main);
   root.replaceChildren(shell);
+  // Sticky columns sit just under the (wrapping) top bar.
+  try {
+    new ResizeObserver(() => root.style.setProperty("--ej-top-h", `${top.offsetHeight}px`)).observe(top);
+  } catch {
+    /* older browsers: CSS default */
+  }
 
   doc.addEventListener("keydown", onKey);
 
@@ -125,7 +142,7 @@ export async function mountApp(root, api, opts = {}) {
   async function loadJourney() {
     try {
       setJourney(await api.journey(s.caseId));
-      renderAll();
+      renderAll(true);
     } catch (err) {
       list.replaceChildren(el("div", { class: "ej-error" }, `Could not load the journey: ${msg(err)}`));
     }
@@ -183,6 +200,7 @@ export async function mountApp(root, api, opts = {}) {
     renderList();
     renderDetail();
     detail.scrollTop = 0;
+    if (main.getBoundingClientRect().top < 0 && (doc.defaultView?.innerWidth || 1400) <= 820) main.scrollIntoView({ block: "start" });
     try {
       const rec = await api.record(s.caseId, seq);
       if (s.selectedSeq !== seq) return;
@@ -275,16 +293,42 @@ export async function mountApp(root, api, opts = {}) {
   }
 
   // ---- rendering -------------------------------------------------------------
-  function renderAll() {
+  function renderAll(animate = false) {
+    renderHeroNow();
     renderRailNow();
     renderSummary();
     renderChartNow();
-    renderList();
+    renderList(animate);
   }
 
   function onFilterChange(o = {}) {
     if (o.clearSearch) search.value = "";
-    renderAll();
+    renderAll(true);
+  }
+
+  // Overview band: whole case, so only redrawn when the data or chain check changes.
+  function renderHeroNow() {
+    const v = s.verify;
+    const key = `${s.caseId}|${s.journey?.head?.seq}|${v ? `${v.running}|${v.ok}|${v.checked}` : ""}`;
+    if (key === heroKey) return;
+    heroKey = key;
+    const only = (fn) => {
+      s.f = { ...newFilters(), sort: s.f.sort };
+      search.value = "";
+      fn();
+      onFilterChange();
+      listWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    renderHero(hero, {
+      journey: s.journey,
+      visits: s.visits,
+      verify: s.verify,
+      onSignal: (id) => only(() => s.f.signals.add(id)),
+      onCategory: (name) => only(() => s.f.categories.add(name)),
+      onRisk: (r) => only(() => (s.f.risk = r)),
+      onSends: () => only(() => ["upload", "form"].forEach((x) => s.f.signals.add(x))),
+      onVerify: () => runVerify(),
+    });
   }
 
   function renderRailNow() {
@@ -547,9 +591,10 @@ export async function mountApp(root, api, opts = {}) {
   }
 
   // ---- journey list ------------------------------------------------------------
-  function renderList() {
+  function renderList(animate = false) {
     const j = s.journey;
     if (!j) return;
+    list.classList.toggle("ej-anim", !!animate);
     s.shown = [];
     if (!s.visits.length) {
       list.replaceChildren(
@@ -588,12 +633,13 @@ export async function mountApp(root, api, opts = {}) {
       const sorted = [...shown].sort((a, b) => (b.risk || 0) - (a.risk || 0) || b.ts - a.ts);
       s.shown = sorted.map((v) => v.seq);
       list.replaceChildren(
-        el("div", { class: "ej-session" }, el("div", { class: "ej-session-h" }, `Highest risk first · ${plural(sorted.length, "visit")}`), sorted.map((v) => renderVisitRow(v, true))),
+        el("div", { class: "ej-session" }, el("div", { class: "ej-session-h" }, `Highest risk first · ${plural(sorted.length, "visit")}`), sorted.map((v, i) => renderVisitRow(v, true, i))),
       );
     } else {
       const keep = new Set(shown.map((v) => v.seq));
       const sessions = [...j.sessions].reverse();
       const blocks = [];
+      let row = 0;
       for (const sess of sessions) {
         const vs = sess.visits.filter((v) => keep.has(v.seq));
         if (!vs.length) continue;
@@ -610,7 +656,7 @@ export async function mountApp(root, api, opts = {}) {
               vs.length === sess.visits.length ? plural(sess.visits.length, "page") : `${vs.length} of ${plural(sess.visits.length, "page")}`,
               risky ? el("span", { class: "ej-risk medium" }, `${risky} flagged`) : null,
             ),
-            vs.map((v) => renderVisitRow(v, false)),
+            vs.map((v) => renderVisitRow(v, false, row++)),
           ),
         );
       }
@@ -627,19 +673,21 @@ export async function mountApp(root, api, opts = {}) {
     }
   }
 
-  function renderVisitRow(v, withDate) {
+  function renderVisitRow(v, withDate, i = 0) {
     const parent = v.parentSeq ? s.visitIndex.get(v.parentSeq) : null;
     const sigs = [...v.signals].sort((a, b) => SIGNAL_ORDER.indexOf(a.id) - SIGNAL_ORDER.indexOf(b.id));
+    const host = hostOf(v.url).replace(/^www\./, "");
     return el(
       "button",
       {
         class: `ej-visit${s.selectedSeq === v.seq ? " sel" : ""} r-${v.riskLevel || "none"}`,
         role: "listitem",
         "data-seq": v.seq,
+        style: `--i:${Math.min(i, 18)};--c:${categoryColor(v.category)}`,
         onclick: () => selectVisit(v.seq),
       },
       el("span", { class: "ej-visit-time" }, withDate ? [fmtShortDay(v.ts), el("br", {}), fmtTime(v.ts)] : fmtTime(v.ts)),
-      el("span", { class: "ej-visit-title" }, v.title || hostOf(v.url)),
+      el("span", { class: "ej-visit-title" }, el("span", { class: "ej-av", "aria-hidden": "true" }, (host[0] || "?").toUpperCase()), v.title || hostOf(v.url)),
       v.risk ? el("span", { class: `ej-risk ${v.riskLevel}`, title: `Risk score ${v.risk}` }, `${v.riskLevel} · ${v.risk}`) : el("span", {}),
       el("span", { class: "ej-visit-url" }, `${hostOf(v.url)}${pathOf(v.url)}`),
       v.searchTerms ? el("span", { class: "ej-visit-q" }, `⌕ “${trim(v.searchTerms, 80)}”`) : null,
@@ -660,6 +708,7 @@ export async function mountApp(root, api, opts = {}) {
   }
 
   function renderVerify() {
+    renderHeroNow();
     const v = s.verify;
     verifyBtn.disabled = !!v?.running || !s.caseId;
     if (!v) {
@@ -694,9 +743,21 @@ export async function mountApp(root, api, opts = {}) {
       detail.replaceChildren(
         el(
           "div",
-          { class: "ej-empty" },
-          el("p", {}, "Select a page visit to see why it was flagged, its reconstruction, what was sent from it, and its place in the evidence chain."),
-          el("p", { class: "ej-hint" }, "Start with Risk → High or a behaviour in the filter panel. Keys: j / k to move, / to search."),
+          { class: "ej-empty ej-welcome" },
+          el("div", { class: "ej-orb", "aria-hidden": "true" }, el("span", {}), el("span", {}), el("span", {})),
+          el("h3", {}, "Pick a visit to investigate"),
+          el("p", {}, "See why it was flagged, an offline reconstruction of the page, what was sent from it, and its place in the evidence chain."),
+          el(
+            "p",
+            { class: "ej-hint" },
+            "Click a number or behaviour above to jump straight in. Keys: ",
+            el("kbd", {}, "j"),
+            " ",
+            el("kbd", {}, "k"),
+            " move · ",
+            el("kbd", {}, "/"),
+            " search",
+          ),
         ),
       );
       return;
@@ -713,12 +774,24 @@ export async function mountApp(root, api, opts = {}) {
     const d = r.data || {};
     const req = d.request || {};
     const res = d.response || {};
+    const vv = s.visitIndex.get(r.seq);
     detail.replaceChildren(
       back,
-      el("h2", { class: "ej-h2" }, res.title || hostOf(req.url) || `Record #${r.seq}`),
-      el("div", { class: "ej-url" }, `${req.method || ""} ${req.url || ""}`),
-      el("div", { class: "ej-url" }, `${fmtDateTime(r.ts)} local · ${fmtUtc(r.ts)}`),
-      renderFlags(s.visitIndex.get(r.seq)),
+      el(
+        "div",
+        { class: `ej-dhero r-${vv?.riskLevel || "none"}`, style: `--c:${categoryColor(vv?.category || "Uncategorised")}` },
+        el(
+          "div",
+          { class: "ej-dhero-top" },
+          vv ? el("span", { class: "ej-chip cat", style: `--c:${categoryColor(vv.category)}` }, vv.category) : null,
+          vv?.risk ? el("span", { class: `ej-risk ${vv.riskLevel}` }, `${vv.riskLevel} · ${vv.risk}`) : null,
+          el("span", { class: "ej-chip" }, `Record #${r.seq}`),
+        ),
+        el("h2", { class: "ej-h2" }, res.title || hostOf(req.url) || `Record #${r.seq}`),
+        el("div", { class: "ej-url" }, `${req.method || ""} ${req.url || ""}`),
+        el("div", { class: "ej-url" }, `${fmtDateTime(r.ts)} local · ${fmtUtc(r.ts)}`),
+      ),
+      renderFlags(vv),
       renderShot(d),
       renderSends(r),
       renderGaps(r),
