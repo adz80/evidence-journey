@@ -26,7 +26,7 @@ export const SIGNAL_ORDER = Object.keys(SIGNALS);
 const CATEGORY_COLORS = {
   "Artificial Intelligence": "#8b5cf6",
   "Cloud Storage & File Sharing": "#3b82f6",
-  "Personal Email": "#ec4899",
+  "Personal Email": "#38bdf8",
   "Job Search & Careers": "#f59e0b",
   "Messaging & Chat": "#14b8a6",
   "Social Networks": "#06b6d4",
@@ -36,7 +36,7 @@ const CATEGORY_COLORS = {
   "Search Engines": "#64748b",
   Shopping: "#84cc16",
   "News & Media": "#a16207",
-  "Streaming & Entertainment": "#d946ef",
+  "Streaming & Entertainment": "#0e7490",
   "Business & Productivity": "#10b981",
   "Corporate (work)": "#059669",
   "Security threats": "#991b1b",
@@ -50,7 +50,9 @@ export function categoryColor(name) {
   if (CATEGORY_COLORS[name]) return CATEGORY_COLORS[name];
   let h = 0;
   for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `hsl(${h % 360} 55% 50%)`;
+  // Hash onto hues that avoid pinks/magentas (which read as "danger" next to red).
+  const HUES = [205, 190, 170, 150, 125, 95, 50, 35, 225, 245, 265];
+  return `hsl(${HUES[h % HUES.length]} 55% 50%)`;
 }
 
 export const RISK_LEVELS = [

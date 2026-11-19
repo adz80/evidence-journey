@@ -65,9 +65,14 @@ export function renderRail(container, { visits, f, insights, collapsed, onChange
 
   const present = new Set();
   for (const v of visits) for (const s of v.signals || []) present.add(s.id);
-  const sigItems = SIGNAL_ORDER.filter((id) => present.has(id) || f.signals.has(id)).map((id) => {
+  const sigIds = SIGNAL_ORDER.filter((id) => present.has(id) || f.signals.has(id));
+  const sigMax = Math.max(1, ...sigIds.map((id) => fc.signals.get(id) || 0));
+  const TONE = { bad: "var(--ej-bad)", warn: "var(--ej-warn)", info: "var(--ej-info)" };
+  const sigItems = sigIds.map((id) => {
     const m = SIGNALS[id];
     return facetButton({
+      share: ((fc.signals.get(id) || 0) / sigMax) * 100,
+      color: TONE[m.tone] || TONE.info,
       on: f.signals.has(id),
       label: m.label,
       icon: el("span", { class: `ej-sig-i ${m.tone}` }, m.icon),
@@ -81,10 +86,13 @@ export function renderRail(container, { visits, f, insights, collapsed, onChange
   for (const v of visits) cats.set(v.category, 0);
   for (const [k, c] of fc.categories) cats.set(k, c);
   for (const k of f.categories) if (!cats.has(k)) cats.set(k, 0);
+  const catMax = Math.max(1, ...cats.values());
   const catItems = [...cats.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([name, count]) =>
       facetButton({
+        share: (count / catMax) * 100,
+        color: categoryColor(name),
         on: f.categories.has(name),
         label: name,
         icon: el("span", { class: "ej-sw", style: `background:${categoryColor(name)}` }),
@@ -114,7 +122,7 @@ export function renderRail(container, { visits, f, insights, collapsed, onChange
             el("button", { class: "ej-chip on", onclick: () => toggle(f.hours, h), title: "Remove" }, `${pad(h)}:00 ×`),
           ),
         )
-      : el("div", { class: "ej-hint" }, "Tip: click a bar in the activity chart to filter by hour."),
+      : el("div", { class: "ej-hint" }, "Tip: click a bar in the chart below to filter by hour."),
   ];
 
   container.classList.toggle("collapsed", !!collapsed);
@@ -144,10 +152,13 @@ function group(title, ...children) {
   return el("div", { class: "ej-group" }, el("h4", {}, title), ...children);
 }
 
-function facetButton({ on, label, icon, count, title, onclick }) {
+// A filter option. `share` (0–100) draws a proportion bar behind it, so the panel doubles
+// as the case's breakdown by behaviour and by category.
+function facetButton({ on, label, icon, count, title, onclick, share, color }) {
+  const style = share != null ? `--p:${Math.round(share)}%;--fc:${color || "var(--ej-info)"}` : null;
   return el(
     "button",
-    { class: `ej-facet${on ? " on" : ""}${!count && !on ? " zero" : ""}`, "aria-pressed": String(!!on), title: title || "", onclick },
+    { class: `ej-facet${on ? " on" : ""}${!count && !on ? " zero" : ""}${share != null ? " bar" : ""}`, "aria-pressed": String(!!on), title: title || "", onclick, style },
     icon,
     el("span", { class: "l" }, label),
     el("span", { class: "n" }, String(count)),

@@ -45,7 +45,7 @@ export async function mountApp(root, api, opts = {}) {
     bulk: null, // "save all reconstructions" progress
     reset: null, // PoC "clear case data" panel
     f: newFilters(),
-    railCollapsed: (doc.defaultView?.innerWidth || 1400) < 1200,
+    heroCollapsed: false,
     shown: [], // seqs currently listed, in display order (for j/k)
   };
 
@@ -65,46 +65,87 @@ export async function mountApp(root, api, opts = {}) {
       }, 150);
     },
   });
-  const verifyBtn = el("button", { class: "ej-btn primary", onclick: () => runVerify() }, "⛓ Verify chain");
+  // Layout (desktop): one screen, no page scroll.
+  //   header:   brand · case (+ subject/window) · search · chain status · case tools
+  //   overview: review priority + headline numbers + activity pulse (collapsible)
+  //   main:     filters (incl. hour chart) | visit list | detail (widest: the evidence)
+  // Below 1200px the filters become a drawer; below 820px list and detail are separate screens.
+  const verifyBtn = el("button", { class: "ej-btn", onclick: () => runVerify() }, "Verify");
   const verifyPill = el("span", { class: "ej-pill" }, "Chain not checked");
   const whoPill = el("span", { class: "ej-pill ej-who" }, "…");
   const logo = el("span", { class: "ej-logo", "aria-hidden": "true" });
   logo.innerHTML =
-    '<svg viewBox="0 0 32 32"><defs><linearGradient id="ejlg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f6821f"/><stop offset=".55" stop-color="#ff3d7f"/><stop offset="1" stop-color="#7c5cff"/></linearGradient></defs><path d="M16 2 4 6.5v8.2c0 7.3 5 12.9 12 15.3 7-2.4 12-8 12-15.3V6.5L16 2Z" fill="url(#ejlg)"/><circle cx="16" cy="15" r="5.2" fill="none" stroke="#fff" stroke-width="2"/><circle cx="16" cy="15" r="1.8" fill="#fff"/></svg>';
+    '<svg viewBox="0 0 32 32"><defs><linearGradient id="ejlg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbad41"/><stop offset="1" stop-color="#f6821f"/></linearGradient></defs><path d="M16 2 4 6.5v8.2c0 7.3 5 12.9 12 15.3 7-2.4 12-8 12-15.3V6.5L16 2Z" fill="url(#ejlg)"/><circle cx="16" cy="15" r="5.2" fill="none" stroke="#fff" stroke-width="2"/><circle cx="16" cy="15" r="1.8" fill="#fff"/></svg>';
+  const toolsBtn = el(
+    "button",
+    { class: "ej-btn ej-icon", title: "Case tools", "aria-label": "Case tools", "aria-expanded": "false", onclick: () => toggleTools() },
+    "⋯",
+  );
+  const banner = el("div", { class: "ej-ctx" }); // case context: subject, window, PoC
   const top = el(
     "div",
     { class: "ej-top" },
     el(
       "div",
-      { class: "ej-brand" },
+      { class: "ej-brand", title: "Insider Threat Incident Response" },
       logo,
-      el("span", { class: "ej-brand-t" }, el("span", { class: "ej-brand-n" }, "Insider Threat Incident Response"), el("span", { class: "ej-brand-s" }, el("span", { class: "ej-live" }), "Live evidence console")),
+      el("span", { class: "ej-brand-t" }, el("span", { class: "ej-brand-n" }, "Insider Threat Incident Response"), el("span", { class: "ej-brand-s" }, el("span", { class: "ej-live" }), "Live")),
     ),
-    caseSelect,
+    el("div", { class: "ej-case" }, caseSelect, banner),
     search,
-    verifyPill,
-    verifyBtn,
-    whoPill,
+    el("div", { class: "ej-chain", title: "Evidence chain integrity" }, verifyPill, verifyBtn),
+    toolsBtn,
   );
-  const banner = el("div", { class: "ej-banner" });
+  const tools = el("div", { class: "ej-tools" });
+  const toolsPop = el(
+    "div",
+    { class: "ej-pop", hidden: true },
+    el("div", { class: "ej-pop-h" }, el("strong", {}, "Case tools"), el("div", { class: "ej-spacer" }), whoPill),
+    tools,
+  );
+  const head = el("header", { class: "ej-head" }, top, toolsPop);
   const hero = el("section", { class: "ej-hero", "aria-label": "Case overview" });
   let heroKey = null;
-  const rail = el("aside", { class: "ej-rail", "aria-label": "Filters" });
-  const summary = el("div", { class: "ej-summary" });
+  const rail = el("div", { class: "ej-rail" });
   const chart = el("div", { class: "ej-chartwrap" });
-  const tools = el("div", { class: "ej-tools" });
-  const list = el("div", { role: "list" });
-  const listWrap = el("div", { class: "ej-list" }, summary, chart, tools, list);
-  const side = el("div", { class: "ej-side" }, rail, listWrap);
+  const railFoot = el("div", { class: "ej-rail-foot" });
+  const railCol = el("aside", { class: "ej-railcol", "aria-label": "Filters" }, rail, chart, railFoot);
+  const summary = el("div", { class: "ej-summary" });
+  const list = el("div", { role: "list", class: "ej-items" });
+  const listWrap = el("div", { class: "ej-list" }, summary, list);
   const detail = el("div", { class: "ej-detail" });
-  const main = el("div", { class: "ej-main" }, side, detail);
-  const shell = el("div", { class: "ej-shell" }, top, banner, hero, main);
+  const scrim = el("div", { class: "ej-scrim", onclick: () => toggleFilters(false) });
+  const main = el("div", { class: "ej-main" }, railCol, listWrap, detail, scrim);
+  const shell = el("div", { class: "ej-shell" }, head, hero, main);
   root.replaceChildren(shell);
-  // Sticky columns sit just under the (wrapping) top bar.
-  try {
-    new ResizeObserver(() => root.style.setProperty("--ej-top-h", `${top.offsetHeight}px`)).observe(top);
-  } catch {
-    /* older browsers: CSS default */
+
+  // Close the tools popover on an outside click (but never mid-reset).
+  doc.addEventListener("click", (e) => {
+    const path = e.composedPath(); // fixed at dispatch, so still valid if a re-render detached the target
+    if (toolsPop.hidden || s.reset?.open || path.includes(toolsPop) || path.includes(toolsBtn)) return;
+    toggleTools(false);
+  });
+
+  function toggleTools(open) {
+    const want = open ?? toolsPop.hidden;
+    toolsPop.hidden = !want;
+    toolsBtn.setAttribute("aria-expanded", String(want));
+    toolsBtn.classList.toggle("on", want);
+    if (want) renderTools();
+  }
+
+  function toggleFilters(open) {
+    const want = open ?? !main.classList.contains("show-filters");
+    main.classList.toggle("show-filters", want);
+  }
+
+  function stepVisit(dir) {
+    if (!s.shown.length) return;
+    const i = s.shown.indexOf(s.selectedSeq);
+    const next = i < 0 ? 0 : Math.max(0, Math.min(s.shown.length - 1, i + dir));
+    if (s.shown[next] === s.selectedSeq) return;
+    selectVisit(s.shown[next]).catch(() => {});
+    list.querySelector(`[data-seq="${s.shown[next]}"]`)?.scrollIntoView({ block: "nearest" });
   }
 
   doc.addEventListener("keydown", onKey);
@@ -278,18 +319,15 @@ export async function mountApp(root, api, opts = {}) {
       search.focus();
       return;
     }
-    if (e.key === "Escape" && t === search) {
-      search.blur();
+    if (e.key === "Escape") {
+      if (t === search) search.blur();
+      if (!toolsPop.hidden && !s.reset?.running) toggleTools(false);
+      toggleFilters(false);
       return;
     }
     if (typing || (e.key !== "j" && e.key !== "k") || !s.shown.length) return;
     e.preventDefault();
-    const i = s.shown.indexOf(s.selectedSeq);
-    const next = e.key === "j" ? (i < 0 ? 0 : Math.min(s.shown.length - 1, i + 1)) : i < 0 ? 0 : Math.max(0, i - 1);
-    if (s.shown[next] !== s.selectedSeq) {
-      selectVisit(s.shown[next]).catch(() => {});
-      list.querySelector(`[data-seq="${s.shown[next]}"]`)?.scrollIntoView({ block: "nearest" });
-    }
+    stepVisit(e.key === "j" ? 1 : -1);
   }
 
   // ---- rendering -------------------------------------------------------------
@@ -309,7 +347,7 @@ export async function mountApp(root, api, opts = {}) {
   // Overview band: whole case, so only redrawn when the data or chain check changes.
   function renderHeroNow() {
     const v = s.verify;
-    const key = `${s.caseId}|${s.journey?.head?.seq}|${v ? `${v.running}|${v.ok}|${v.checked}` : ""}`;
+    const key = `${s.caseId}|${s.journey?.head?.seq}|${v ? `${v.running}|${v.ok}|${v.checked}` : ""}|${s.heroCollapsed}`;
     if (key === heroKey) return;
     heroKey = key;
     const only = (fn) => {
@@ -317,14 +355,20 @@ export async function mountApp(root, api, opts = {}) {
       search.value = "";
       fn();
       onFilterChange();
-      listWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+      list.scrollTop = 0;
+      if (main.getBoundingClientRect().top < 0) listWrap.scrollIntoView({ behavior: "smooth", block: "start" });
     };
+    hero.classList.toggle("collapsed", !!s.heroCollapsed);
     renderHero(hero, {
       journey: s.journey,
       visits: s.visits,
       verify: s.verify,
-      onSignal: (id) => only(() => s.f.signals.add(id)),
-      onCategory: (name) => only(() => s.f.categories.add(name)),
+      collapsed: !!s.heroCollapsed,
+      onToggle: () => {
+        s.heroCollapsed = !s.heroCollapsed;
+        renderHeroNow();
+      },
+      onAfterHours: () => only(() => (s.f.afterHours = true)),
       onRisk: (r) => only(() => (s.f.risk = r)),
       onSends: () => only(() => ["upload", "form"].forEach((x) => s.f.signals.add(x))),
       onVerify: () => runVerify(),
@@ -336,12 +380,9 @@ export async function mountApp(root, api, opts = {}) {
       visits: s.visits,
       f: s.f,
       insights: s.journey?.insights,
-      collapsed: s.railCollapsed,
+      collapsed: false,
       onChange: onFilterChange,
-      onToggle: () => {
-        s.railCollapsed = !s.railCollapsed;
-        renderRailNow();
-      },
+      onToggle: () => toggleFilters(false),
     });
   }
 
@@ -360,12 +401,17 @@ export async function mountApp(root, api, opts = {}) {
 
   function renderBanner() {
     const c = s.cases.find((x) => x.id === s.caseId);
+    banner.title = [
+      "Proof of concept: captures only the case subject, only during the case window.",
+      c ? `What was sent: ${c.captureSent ? "captured" : "not captured"}` : "",
+      mode === "gadget" ? "View: gadget" : "View: web",
+    ]
+      .filter(Boolean)
+      .join("\n");
     banner.replaceChildren(
-      el("span", {}, el("strong", {}, "Proof of concept."), " Captures only the case subject, only during the case window."),
-      c ? el("span", {}, `Subject: ${c.subject}`) : null,
-      c ? el("span", {}, `Window: ${c.start ? fmtDay(Date.parse(c.start)) : "?"} → ${c.end ? fmtDay(Date.parse(c.end)) : "?"}`) : null,
-      c ? el("span", {}, `What was sent: ${c.captureSent ? "captured" : "not captured"}`) : null,
-      el("span", {}, mode === "gadget" ? "View: gadget" : "View: web"),
+      el("span", { class: "ej-poc" }, "PoC"),
+      c ? el("span", { class: "ej-ctx-sub" }, c.subject) : null,
+      c ? el("span", {}, `${c.start ? fmtShortDay(Date.parse(c.start)) : "?"} → ${c.end ? fmtShortDay(Date.parse(c.end)) : "?"}`) : null,
     );
   }
 
@@ -395,34 +441,44 @@ export async function mountApp(root, api, opts = {}) {
       el("option", { value: "risk" }, "Highest risk first"),
     );
     sort.value = s.f.sort;
+    // List header: what you're looking at (count + removable filter chips), how it's sorted.
     summary.replaceChildren(
-      el("span", { class: "ej-pill" }, nf ? `${shown.length} of ${plural(s.visits.length, "visit")}` : plural(t.visits || 0, "page visit")),
-      el("span", { class: "ej-pill" }, plural(j.sessions.length, "session")),
-      high ? el("span", { class: "ej-pill bad" }, `${high} high risk`) : null,
-      med ? el("span", { class: "ej-pill warn" }, `${med} medium`) : null,
-      t.sends ? el("span", { class: "ej-pill bad" }, plural(t.sends, "upload/form", "uploads/forms")) : null,
-      t.downloads ? el("span", { class: "ej-pill brand" }, plural(t.downloads, "download")) : null,
-      t.gaps ? el("span", { class: "ej-pill warn" }, plural(t.gaps, "gap")) : null,
-      ...gatewayPills(j.insights?.gateway),
-      el("span", { class: "ej-pill", title: j.head?.hash || "" }, `Chain #${j.head?.seq || 0} · ${shortHash(j.head?.hash)}`),
-      el("div", { class: "ej-spacer" }),
-      sort,
+      el(
+        "div",
+        { class: "ej-sum-row" },
+        el("button", { class: "ej-btn ej-filters-btn", onclick: () => toggleFilters(true) }, "⚲ Filters", nf ? el("span", { class: "ej-count" }, String(nf)) : null),
+        el("span", { class: "ej-sum-n" }, nf ? `${shown.length.toLocaleString()} of ${plural(s.visits.length, "visit")}` : plural(t.visits || 0, "visit")),
+        high || med ? el("span", { class: "ej-hint" }, `${high} high · ${med} medium`) : null,
+        el("div", { class: "ej-spacer" }),
+        sort,
+      ),
+      nf ? el("div", { class: "ej-fchips" }, filterChips()) : null,
+    );
+    railFoot.replaceChildren(
+      el("button", { class: "ej-btn primary", onclick: () => toggleFilters(false) }, `Show ${plural(shown.length, "visit")}`),
     );
     if (!s.reset?.open) renderTools(); // don't wipe the confirm box while it's being typed in
   }
 
-  // Case-wide view of Gateway's context: where the subject connected from, device posture.
-  function gatewayPills(g) {
-    if (!g) return [];
+  // One removable chip per active filter.
+  function filterChips() {
+    const f = s.f;
+    const chip = (label, remove, tone = "") =>
+      el("button", { class: `ej-fchip ${tone}`, title: "Remove filter", onclick: () => (remove(), onFilterChange()) }, label, el("span", { class: "x" }, "×"));
     const out = [];
-    const nets = g.networks || [];
-    if (nets.length) {
-      const list = nets.map((n) => `${n.srcIp}${n.onramp ? ` via ${n.onramp}` : ""} · ${n.visits} visits · ${fmtDateTime(n.first)} → ${fmtDateTime(n.last)}`).join("\n");
-      out.push(el("span", { class: `ej-pill${nets.length > 1 ? " warn" : ""}`, title: `Source IPs seen by Gateway:\n${list}` }, plural(nets.length, "network")));
-    }
-    const ever = g.posturePassedEver || [];
-    if (ever.length) out.push(el("span", { class: "ej-pill", title: "Device posture checks the device passed at some point in the case" }, `Posture: ${ever.map((x) => g.postureNames?.[x] || x.slice(0, 8)).join(", ")}`));
-    if (g.postureErrors) out.push(el("span", { class: "ej-pill warn", title: "Gateway could not return device posture for these visits" }, `${g.postureErrors} posture unknown`));
+    if (f.risk !== "all") out.push(chip(`Risk: ${f.risk}`, () => (f.risk = "all")));
+    for (const id of f.signals) out.push(chip(SIGNALS[id]?.label || id, () => f.signals.delete(id), SIGNALS[id]?.tone || ""));
+    for (const c of f.categories) out.push(chip(c, () => f.categories.delete(c)));
+    for (const h of [...f.hours].sort((a, b) => a - b)) out.push(chip(`${pad2(h)}:00`, () => f.hours.delete(h)));
+    if (f.afterHours) out.push(chip("After hours", () => (f.afterHours = false)));
+    if (f.q) out.push(chip(`“${trim(f.q, 24)}”`, () => ((f.q = ""), (search.value = ""))));
+    out.push(
+      el(
+        "button",
+        { class: "ej-link", onclick: () => ((s.f = { ...newFilters(), sort: s.f.sort }), onFilterChange({ clearSearch: true })) },
+        "Clear all",
+      ),
+    );
     return out;
   }
 
@@ -738,7 +794,7 @@ export async function mountApp(root, api, opts = {}) {
 
   // ---- detail panel --------------------------------------------------------------
   function renderDetail() {
-    const back = el("button", { class: "ej-btn ej-back", onclick: () => main.classList.remove("show-detail") }, "← Back to journey");
+    const back = el("button", { class: "ej-btn ej-back", onclick: () => main.classList.remove("show-detail") }, "← Back");
     if (!s.selectedSeq) {
       detail.replaceChildren(
         el(
@@ -750,7 +806,7 @@ export async function mountApp(root, api, opts = {}) {
           el(
             "p",
             { class: "ej-hint" },
-            "Click a number or behaviour above to jump straight in. Keys: ",
+            "Click a number in the overview, or pick a behaviour in Filters. Keys: ",
             el("kbd", {}, "j"),
             " ",
             el("kbd", {}, "k"),
@@ -775,8 +831,19 @@ export async function mountApp(root, api, opts = {}) {
     const req = d.request || {};
     const res = d.response || {};
     const vv = s.visitIndex.get(r.seq);
+    const pos = s.shown.indexOf(r.seq);
+    const nav = el("nav", { class: "ej-secnav", "aria-label": "Sections" });
     detail.replaceChildren(
-      back,
+      el(
+        "div",
+        { class: "ej-dhead" },
+        back,
+        el("span", { class: "ej-dhead-t" }, res.title || hostOf(req.url) || `Record #${r.seq}`),
+        el("div", { class: "ej-spacer" }),
+        pos >= 0 ? el("span", { class: "ej-hint" }, `${pos + 1} of ${s.shown.length}`) : null,
+        el("button", { class: "ej-btn ej-icon", title: "Previous visit (k)", "aria-label": "Previous visit", disabled: pos <= 0, onclick: () => stepVisit(-1) }, "↑"),
+        el("button", { class: "ej-btn ej-icon", title: "Next visit (j)", "aria-label": "Next visit", disabled: pos < 0 || pos >= s.shown.length - 1, onclick: () => stepVisit(1) }, "↓"),
+      ),
       el(
         "div",
         { class: `ej-dhero r-${vv?.riskLevel || "none"}`, style: `--c:${categoryColor(vv?.category || "Uncategorised")}` },
@@ -791,10 +858,12 @@ export async function mountApp(root, api, opts = {}) {
         el("div", { class: "ej-url" }, `${req.method || ""} ${req.url || ""}`),
         el("div", { class: "ej-url" }, `${fmtDateTime(r.ts)} local · ${fmtUtc(r.ts)}`),
       ),
+      nav,
       renderFlags(vv),
       renderShot(d),
       renderSends(r),
       renderGaps(r),
+      renderGatewayContext(d, vv),
       section(
         "Page request",
         el(
@@ -826,7 +895,14 @@ export async function mountApp(root, api, opts = {}) {
           ]),
         ),
       ),
-      renderGatewayContext(d, s.visitIndex.get(r.seq)),
+    );
+    // Jump links to each section (the detail is long: evidence first, technical last).
+    const secs = [...detail.children].filter((n) => n.classList?.contains("ej-section"));
+    nav.replaceChildren(
+      ...secs.map((sec) => {
+        const label = (sec.querySelector(":scope > h3, :scope > summary")?.textContent || "").replace(/\s*\(.*$/, "").trim();
+        return label ? el("button", { class: "ej-navchip", onclick: () => sec.scrollIntoView({ behavior: "smooth", block: "start" }) }, trim(label, 26)) : null;
+      }),
     );
   }
 
